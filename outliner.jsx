@@ -23,15 +23,16 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 
-// --- Utility Functions for Tree Management ---
+// --- Utility Functions ---
 
 const generateId = () => Math.random().toString(36).substr(2, 9);
 
-// Flatten the tree into a linear list for rendering and keyboard navigation logic
 const flattenTree = (nodes, depth = 0, visibleList = [], showCompleted = false) => {
   nodes.forEach(node => {
     // Filter out completed items if showCompleted is false
-    if (!showCompleted && node.completed) return;
+    // EXCEPTION: Always show top-level sections (depth 0) even if marked complete, 
+    // otherwise the user loses the container entirely.
+    if (!showCompleted && node.completed && depth > 0) return;
 
     visibleList.push({ ...node, depth });
     if (!node.collapsed && node.children && node.children.length > 0) {
@@ -41,10 +42,8 @@ const flattenTree = (nodes, depth = 0, visibleList = [], showCompleted = false) 
   return visibleList;
 };
 
-// Deep clone helper
 const cloneTree = (items) => JSON.parse(JSON.stringify(items));
 
-// Recursive search to find a node and its path
 const findNodePath = (nodes, id, path = []) => {
   for (let i = 0; i < nodes.length; i++) {
     if (nodes[i].id === id) return [...path, { nodes, index: i, node: nodes[i] }];
@@ -56,15 +55,14 @@ const findNodePath = (nodes, id, path = []) => {
   return null;
 };
 
+// Default data now structured as Sections
 const DEFAULT_TREE = [
-  { id: '1', text: 'Welcome to your Project Manager', completed: false, collapsed: false, children: [
-    { id: '2', text: 'Hover over a bullet to see the Trash icon', completed: false, collapsed: false, children: [] },
-    { id: '3', text: 'Click the circle to mark as done', completed: false, collapsed: false, children: [
-        { id: '4', text: 'Completing a parent completes all children', completed: false, collapsed: false, children: [] }
-    ]},
+  { id: '1', text: 'Active Projects', completed: false, collapsed: false, children: [
+    { id: '2', text: 'Website Redesign', completed: false, collapsed: false, children: [] },
+    { id: '3', text: 'Q4 Marketing Plan', completed: false, collapsed: false, children: [] }
   ]},
-  { id: '5', text: 'Completed items are hidden by default', completed: true, collapsed: false, children: [
-      { id: '6', text: 'Use the Eye icon in the header to see me', completed: true, collapsed: false, children: [] }
+  { id: '4', text: 'Postponed Projects', completed: false, collapsed: false, children: [
+      { id: '5', text: 'Mobile App v2', completed: false, collapsed: false, children: [] }
   ]}
 ];
 
@@ -75,22 +73,18 @@ export default function App() {
   const [isLoaded, setIsLoaded] = useState(false);
   const [saveStatus, setSaveStatus] = useState('idle'); 
   const [showCompleted, setShowCompleted] = useState(false);
-
   const [focusedId, setFocusedId] = useState(null);
   
-  // Refs
   const inputRefs = useRef({});
   const pendingFocus = useRef(null);
   const saveTimeoutRef = useRef(null);
 
-  // Drag and Drop State
   const [draggedItem, setDraggedItem] = useState(null);
   const [dropTarget, setDropTarget] = useState(null);
 
-  // Flatten tree for rendering logic, passing the visibility filter
   const visibleItems = flattenTree(tree, 0, [], showCompleted);
 
-  // --- Authentication Effect ---
+  // --- Auth ---
   useEffect(() => {
     const initAuth = async () => {
       if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
@@ -104,45 +98,38 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // --- Data Sync Effect ---
+  // --- Sync (Load) ---
   useEffect(() => {
     if (!user) return;
-
     const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'data', 'workflowy');
     
-    // We unsubscribe from previous listener if this effect re-runs
     const unsubscribe = onSnapshot(docRef, (snap) => {
       if (snap.exists()) {
-        const data = snap.data().tree;
-        // Only update state if data is actually different to prevent loops/jitters
-        if (JSON.stringify(data) !== JSON.stringify(tree)) {
-             setTree(data);
+        const data = snap.data();
+        // Update Tree (prevent loops)
+        if (JSON.stringify(data.tree) !== JSON.stringify(tree)) {
+             setTree(data.tree || []);
         }
         setIsLoaded(true);
       } else {
-        // Logic: If document doesn't exist, we initialize it.
-        // This happens for NEW users. It does NOT overwrite existing data for existing users.
         setTree(DEFAULT_TREE);
         setDoc(docRef, { tree: DEFAULT_TREE });
         setIsLoaded(true);
       }
     }, (error) => {
-      console.error("Error fetching document:", error);
+      console.error("Error fetching:", error);
       setSaveStatus('error');
     });
-
     return () => unsubscribe();
-  }, [user]); // Removed isLoaded to prevent double-subscription, user is the main key
+  }, [user]); 
 
-  // --- Auto-Save Effect ---
+  // --- Sync (Save) ---
   useEffect(() => {
     if (!user || !isLoaded) return;
-
-    // Don't save if the tree is empty (unless it was intentionally emptied, but here it prevents initial load override)
+    // Prevent saving empty state over existing data on initial glitch
     if (tree.length === 0 && isLoaded) return;
 
     setSaveStatus('saving');
-
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
 
     saveTimeoutRef.current = setTimeout(async () => {
@@ -167,15 +154,13 @@ export default function App() {
     }
   }, [visibleItems]);
 
-
   // --- Actions ---
 
   const updateText = (id, newText) => {
     const newTree = cloneTree(tree);
     const path = findNodePath(newTree, id);
     if (path) {
-      const { nodes, index } = path[path.length - 1];
-      nodes[index].text = newText;
+      path[path.length - 1].nodes[path[path.length - 1].index].text = newText;
       setTree(newTree);
     }
   };
@@ -184,7 +169,7 @@ export default function App() {
     const newTree = cloneTree(tree);
     const path = findNodePath(newTree, id);
     if (path) {
-      const { node } = path[path.length - 1];
+      const node = path[path.length - 1].node;
       node.collapsed = !node.collapsed;
       setTree(newTree);
     }
@@ -198,7 +183,6 @@ export default function App() {
       const newStatus = !node.completed;
       node.completed = newStatus;
       
-      // If marking as complete, recursively mark children as complete
       if (newStatus && node.children) {
           const markChildren = (children) => {
               children.forEach(child => {
@@ -208,12 +192,11 @@ export default function App() {
           }
           markChildren(node.children);
       }
-      
       setTree(newTree);
     }
   };
 
-  const addNode = (afterId) => {
+  const addNode = (afterId, isSection = false) => {
     const newTree = cloneTree(tree);
     const newNode = { id: generateId(), text: '', completed: false, collapsed: false, children: [] };
     
@@ -226,10 +209,26 @@ export default function App() {
     }
   };
 
+  // Used only for empty state recovery
+  const addRootNode = () => {
+      const newTree = cloneTree(tree);
+      const newSectionId = generateId();
+      
+      const newSection = {
+          id: newSectionId,
+          text: '', 
+          completed: false,
+          collapsed: false,
+          children: []
+      };
+      
+      newTree.push(newSection);
+      setTree(newTree);
+      pendingFocus.current = newSectionId;
+  };
+
   const deleteNode = (id) => {
     const currentIndex = visibleItems.findIndex(item => item.id === id);
-    
-    // Calculate focus target before deletion
     let nextFocusId = null;
     if (currentIndex > 0) nextFocusId = visibleItems[currentIndex - 1].id;
     else if (currentIndex < visibleItems.length - 1) nextFocusId = visibleItems[currentIndex + 1].id;
@@ -240,10 +239,7 @@ export default function App() {
       const { nodes, index } = path[path.length - 1];
       nodes.splice(index, 1);
       setTree(newTree);
-      
-      if (nextFocusId) {
-        pendingFocus.current = nextFocusId;
-      }
+      if (nextFocusId) pendingFocus.current = nextFocusId;
     }
   };
 
@@ -253,7 +249,10 @@ export default function App() {
     if (!path) return;
 
     const { nodes, index } = path[path.length - 1];
-    if (index === 0) return;
+    if (index === 0) return; // Can't indent first item
+
+    // Rule: Don't allow indenting a Section (depth 0) into another Section
+    if (nodes === newTree) return; 
 
     const prevSibling = nodes[index - 1];
     const nodeToMove = nodes[index];
@@ -285,7 +284,6 @@ export default function App() {
 
   const moveNode = (draggedId, targetId, position) => {
     if (draggedId === targetId) return;
-    
     const newTree = cloneTree(tree);
     
     const dragPath = findNodePath(newTree, draggedId);
@@ -295,7 +293,6 @@ export default function App() {
 
     const targetPath = findNodePath(newTree, targetId);
     if (!targetPath) return;
-    
     const targetInfo = targetPath[targetPath.length - 1];
     
     if (position === 'inside') {
@@ -313,7 +310,7 @@ export default function App() {
 
   // --- Event Handlers ---
 
-  const handleKeyDown = (e, id, text) => {
+  const handleKeyDown = (e, id, text, depth) => {
     if (e.key === 'Enter') {
       e.preventDefault();
       addNode(id);
@@ -341,8 +338,6 @@ export default function App() {
     }
   };
 
-  // --- Drag & Drop Handlers ---
-
   const handleDragStart = (e, item) => {
     setDraggedItem(item);
     e.dataTransfer.effectAllowed = 'move';
@@ -356,8 +351,11 @@ export default function App() {
     const offsetY = e.clientY - rect.top;
     
     let position = 'inside';
-    if (offsetY < rect.height * 0.25) position = 'before';
-    else if (offsetY > rect.height * 0.75) position = 'after';
+    // Easier to target before/after on sections (larger targets)
+    const zone = targetItem.depth === 0 ? 0.3 : 0.25;
+    
+    if (offsetY < rect.height * zone) position = 'before';
+    else if (offsetY > rect.height * (1 - zone)) position = 'after';
 
     setDropTarget({ id: targetItem.id, position });
   };
@@ -375,65 +373,42 @@ export default function App() {
       return (
           <div className="min-h-screen flex items-center justify-center bg-white text-gray-500">
               <div className="flex items-center gap-2">
-                  <Loader2 className="animate-spin" /> Loading your projects...
+                  <Loader2 className="animate-spin" /> Loading...
               </div>
           </div>
       );
   }
 
   return (
-    <div className="min-h-screen bg-white text-gray-800 font-sans selection:bg-blue-100 p-8">
-      <div className="max-w-4xl mx-auto relative">
+    <div className="min-h-screen bg-gray-50 text-gray-800 font-sans selection:bg-blue-100 p-8">
+      <div className="max-w-4xl mx-auto relative bg-white min-h-[80vh] shadow-sm rounded-xl p-8 border border-gray-100">
         
         {/* Header area */}
-        <div className="flex items-center justify-between mb-8">
-            <h1 className="text-3xl font-bold text-gray-900">My Projects</h1>
+        <div className="flex items-center justify-end mb-6 border-b border-gray-100 pb-4">
             
             <div className="flex items-center gap-6">
-                {/* Visibility Toggle */}
                 <button 
                     onClick={() => setShowCompleted(!showCompleted)}
                     className="flex items-center gap-2 text-sm font-medium text-gray-500 hover:text-gray-800 transition-colors"
                 >
-                    {showCompleted ? (
-                        <>
-                            <Eye size={16} />
-                            Hide Completed
-                        </>
-                    ) : (
-                        <>
-                            <EyeOff size={16} />
-                            Show Completed
-                        </>
-                    )}
+                    {showCompleted ? <Eye size={16} /> : <EyeOff size={16} />}
+                    {showCompleted ? 'Hide Done' : 'Show Done'}
                 </button>
 
-                {/* Sync Indicator */}
                 <div className="flex items-center gap-2 text-sm font-medium text-gray-400 w-20 justify-end">
-                    {saveStatus === 'saving' && (
-                        <>
-                            <Loader2 size={14} className="animate-spin text-blue-500" />
-                            <span className="text-blue-500">Saving...</span>
-                        </>
-                    )}
-                    {saveStatus === 'saved' && (
-                        <>
-                            <CheckCircle2 size={14} className="text-green-500" />
-                            <span className="text-green-600">Saved</span>
-                        </>
-                    )}
-                    {saveStatus === 'error' && (
-                        <>
-                            <CloudOff size={14} className="text-red-500" />
-                            <span className="text-red-500">Offline</span>
-                        </>
-                    )}
+                    {saveStatus === 'saving' && <Loader2 size={14} className="animate-spin text-blue-500" />}
+                    {saveStatus === 'saved' && <CheckCircle2 size={14} className="text-green-500" />}
+                    {saveStatus === 'error' && <CloudOff size={14} className="text-red-500" />}
+                    <span className={saveStatus === 'saved' ? 'text-green-600' : ''}>
+                        {saveStatus === 'saving' ? 'Saving' : saveStatus === 'saved' ? 'Saved' : 'Offline'}
+                    </span>
                 </div>
             </div>
         </div>
         
-        <div className="space-y-1 pb-40">
+        <div className="space-y-0.5 pb-40">
           {visibleItems.map((item) => {
+            const isSection = item.depth === 0;
             const isDragging = draggedItem?.id === item.id;
             const isDropTarget = dropTarget?.id === item.id;
             
@@ -443,8 +418,9 @@ export default function App() {
                 className={`
                   relative group flex items-start transition-all duration-100 pr-4
                   ${isDragging ? 'opacity-30' : 'opacity-100'}
+                  ${isSection ? 'mt-6 mb-2' : ''} 
                 `}
-                style={{ paddingLeft: `${item.depth * 24}px` }}
+                style={{ paddingLeft: isSection ? '0px' : `${item.depth * 24}px` }}
                 onDragOver={(e) => handleDragOver(e, item)}
                 onDrop={handleDrop}
               >
@@ -456,67 +432,80 @@ export default function App() {
                   <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-500 z-10" />
                 )}
                 
-                <div className="relative flex items-center w-14 mr-1 shrink-0 h-7">
+                <div className="relative flex items-center w-14 mr-1 shrink-0 h-7 self-start mt-0.5">
+                   {/* Draggable Handle (Left of Bullet) */}
+                   <div 
+                    className={`
+                      absolute left-0 cursor-move opacity-0 group-hover:opacity-30 hover:!opacity-100 transition-opacity
+                    `}
+                    draggable
+                    onDragStart={(e) => handleDragStart(e, item)}
+                   >
+                        <GripVertical size={16} />
+                   </div>
+
                   {/* Collapse Toggle */}
                   {item.children && item.children.length > 0 && (
                     <button 
                       onClick={() => toggleCollapse(item.id)}
-                      className="absolute left-0 text-gray-400 hover:text-gray-600 p-1"
+                      className={`
+                          absolute text-gray-400 hover:text-gray-600 p-1
+                          ${isSection ? 'left-4 top-0' : 'left-0'}
+                      `}
                       tabIndex={-1}
                     >
                       {item.collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
                     </button>
                   )}
 
-                  {/* Draggable Bullet */}
-                  <div 
-                    className={`
-                      absolute left-5 w-1.5 h-1.5 rounded-full cursor-move z-20
-                      ${isDropTarget && dropTarget.position === 'inside' 
-                        ? 'ring-4 ring-blue-200 bg-blue-600 scale-125' 
-                        : 'bg-gray-300 group-hover:bg-gray-500'}
-                    `}
-                    draggable
-                    onDragStart={(e) => handleDragStart(e, item)}
-                  >
-                    <div className="absolute -inset-3 bg-transparent" />
-                  </div>
-
-                   {/* Completion Checkbox */}
-                   <button 
-                      onClick={() => toggleComplete(item.id)}
-                      className={`
-                        absolute left-8 p-0.5 rounded hover:bg-gray-100 transition-colors
-                        ${item.completed ? 'text-green-500' : 'text-gray-300 hover:text-gray-400'}
-                      `}
-                      tabIndex={-1}
-                   >
-                      {item.completed ? <CheckCircle2 size={16} /> : <Circle size={16} />}
-                   </button>
-
+                   {/* Checkbox / Section Icon */}
+                   {isSection ? (
+                       // Section Header Icon (Layout icon implies "Section")
+                        <div className="absolute left-8 top-1.5 text-gray-300">
+                            <Layout size={16} />
+                        </div>
+                   ) : (
+                       // Standard Checkbox
+                        <button 
+                            onClick={() => toggleComplete(item.id)}
+                            className={`
+                                absolute left-6 p-0.5 rounded hover:bg-gray-100 transition-colors
+                                ${item.completed ? 'text-green-500' : 'text-gray-300 hover:text-gray-400'}
+                            `}
+                            tabIndex={-1}
+                        >
+                            {item.completed ? <CheckCircle2 size={16} /> : <Circle size={16} />}
+                        </button>
+                   )}
                 </div>
 
                 {/* Input Field */}
-                <div className="relative flex-1">
+                <div className={`relative flex-1 ${isSection ? 'border-b border-gray-200 pb-1' : ''}`}>
                     <input
-                    ref={(el) => (inputRefs.current[item.id] = el)}
-                    value={item.text}
-                    onChange={(e) => updateText(item.id, e.target.value)}
-                    onKeyDown={(e) => handleKeyDown(e, item.id, item.text)}
-                    onFocus={() => setFocusedId(item.id)}
-                    className={`
-                        w-full bg-transparent outline-none leading-relaxed transition-all
-                        ${item.completed ? 'line-through text-gray-400' : 'text-gray-800'}
-                    `}
-                    placeholder="Type something..."
+                        ref={(el) => (inputRefs.current[item.id] = el)}
+                        value={item.text}
+                        onChange={(e) => updateText(item.id, e.target.value)}
+                        onKeyDown={(e) => handleKeyDown(e, item.id, item.text, item.depth)}
+                        onFocus={() => setFocusedId(item.id)}
+                        className={`
+                            w-full bg-transparent outline-none transition-all
+                            ${isSection 
+                                ? 'text-xl font-bold text-gray-800 placeholder-gray-300' 
+                                : `leading-relaxed ${item.completed ? 'line-through text-gray-400' : 'text-gray-700'}`
+                            }
+                        `}
+                        placeholder={isSection ? "Section Name" : "Type a task..."}
                     />
                 </div>
 
-                {/* Delete Action (Hover only) */}
+                {/* Delete Action */}
                 <button 
                     onClick={() => deleteNode(item.id)}
-                    className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-500 transition-opacity px-2"
-                    title="Delete item"
+                    className={`
+                        opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-500 transition-opacity px-2
+                        ${isSection ? 'mt-1' : ''}
+                    `}
+                    title={isSection ? "Delete Section & Contents" : "Delete item"}
                     tabIndex={-1}
                 >
                     <Trash2 size={14} />
@@ -526,40 +515,30 @@ export default function App() {
           })}
 
           {visibleItems.length === 0 && (
-             <div className="text-center py-20 text-gray-400 italic">
-                 {showCompleted ? "No items found." : "All items are completed and hidden."}
+             <div 
+                onClick={addRootNode}
+                className="text-center py-20 text-gray-400 italic cursor-pointer hover:text-gray-600 hover:bg-gray-50 rounded-lg border-2 border-dashed border-transparent hover:border-gray-200 transition-all"
+             >
+                 Empty board. Click here to add your first section.
              </div>
           )}
         </div>
         
-        <div 
-          onClick={() => {
-            const newId = generateId();
-            setTree([...tree, { id: newId, text: '', children: [] }]);
-            setTimeout(() => inputRefs.current[newId]?.focus(), 10);
-          }}
-          className="flex items-center text-gray-400 hover:text-gray-600 cursor-pointer mt-4 ml-8"
-        >
-          <Plus size={16} className="mr-2" /> Click to add item
-        </div>
       </div>
       
       {/* Help Footer */}
-      <div className="fixed bottom-4 right-4 bg-gray-100 p-4 rounded-lg text-xs text-gray-500 border border-gray-200 shadow-sm flex items-center gap-4">
+      <div className="fixed bottom-4 right-4 bg-white p-4 rounded-lg text-xs text-gray-500 border border-gray-200 shadow-sm flex items-center gap-4">
         <div>
-            <p className="font-semibold mb-1">Keyboard Shortcuts:</p>
+            <p className="font-semibold mb-1">Shortcuts:</p>
             <ul className="space-y-1">
-            <li><kbd className="bg-white px-1 border rounded">Tab</kbd> Indent</li>
-            <li><kbd className="bg-white px-1 border rounded">Shift+Tab</kbd> Outdent</li>
-            <li><kbd className="bg-white px-1 border rounded">↑</kbd> <kbd className="bg-white px-1 border rounded">↓</kbd> Navigate</li>
+            <li><kbd className="bg-gray-50 px-1 border rounded">Tab</kbd> Indent</li>
+            <li><kbd className="bg-gray-50 px-1 border rounded">Shift+Tab</kbd> Outdent</li>
+            <li><kbd className="bg-gray-50 px-1 border rounded">Enter</kbd> New Item</li>
             </ul>
         </div>
-        
         <div className="h-full w-px bg-gray-200 mx-1"></div>
-
-        {/* User ID Debugger */}
         <div className="text-gray-400 flex flex-col justify-center min-w-[80px]">
-             <div className="flex items-center gap-1 mb-1" title="If this ID changes, your data resets">
+             <div className="flex items-center gap-1 mb-1">
                  <User size={10} />
                  <span className="font-semibold">Session ID</span>
              </div>
