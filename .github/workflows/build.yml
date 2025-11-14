@@ -33,3 +33,10 @@ jobs:
       with:
         name: production-files
         path: dist # Change to 'build' if using Create React App
+
+    # Step 6: Deploy to GitHub Pages
+    - name: Deploy to GitHub Pages
+      uses: peaceiris/actions-gh-pages@v3
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        publish_dir: ./dist # Change to './build' if using Create React App
