@@ -7,14 +7,16 @@ import { getAuth, onAuthStateChanged, signInAnonymously, signInWithCustomToken }
 import { getFirestore, doc, setDoc, onSnapshot, collection } from 'firebase/firestore';
 
 // --- Firebase Configuration & Initialization ---
+// Values are injected at build time via Vite environment variables (VITE_ prefixed).
+// For local development create a `.env.local` with the same VITE_* keys.
 const firebaseConfig = {
-  apiKey: "AIzaSyCmmf4tX88LyjFhPBkTRyfJNF7vK6Qyn3w",
-  authDomain: "outliner-7ac92.firebaseapp.com",
-  projectId: "outliner-7ac92",
-  storageBucket: "outliner-7ac92.firebasestorage.app",
-  messagingSenderId: "482247278746",
-  appId: "1:482247278746:web:b17c4951510bf5a3ac5f23",
-  measurementId: "G-CBZP7BDF3X"
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID,
+  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID,
 };
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
