@@ -252,9 +252,8 @@ export default function App() {
     const { nodes, index } = path[path.length - 1];
     if (index === 0) return; // Can't indent first item
 
-    // Rule: Don't allow indenting a Section (depth 0) into another Section
-    if (nodes === newTree) return; 
-
+    // Removed the check that blocked root-level indentations
+    
     const prevSibling = nodes[index - 1];
     const nodeToMove = nodes[index];
 
