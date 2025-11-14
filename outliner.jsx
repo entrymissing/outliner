@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import ReactDOM from 'react-dom/client';
 import { GripVertical, ChevronRight, ChevronDown, Plus, Trash2, Cloud, CloudOff, CheckCircle2, Circle, Loader2, Eye, EyeOff, X, User } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
