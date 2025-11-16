@@ -4,7 +4,7 @@ import './index.css';
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { GripVertical, ChevronRight, ChevronDown, Plus, Trash2, Cloud, CloudOff, CheckCircle2, Circle, Loader2, Eye, EyeOff, X, User, Layout } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
-import { getAuth, onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
+import { getAuth, onAuthStateChanged, signInWithPopup, signOut, GoogleAuthProvider } from 'firebase/auth';
 import { getFirestore, doc, setDoc, onSnapshot, collection } from 'firebase/firestore';
 
 // --- Firebase Configuration & Initialization ---
@@ -71,6 +71,7 @@ export default function App() {
   // --- State ---
   const [tree, setTree] = useState([]); 
   const [user, setUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
   const [isLoaded, setIsLoaded] = useState(false);
   const [saveStatus, setSaveStatus] = useState('idle'); 
   const [showCompleted, setShowCompleted] = useState(false);
@@ -85,20 +86,35 @@ export default function App() {
 
   const visibleItems = flattenTree(tree, 0, [], showCompleted);
 
-  // --- Auth ---
+// --- Auth Effect (Changed) ---
   useEffect(() => {
-    const initAuth = async () => {
-      if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-        await signInWithCustomToken(auth, __initial_auth_token);
-      } else {
-        await signInAnonymously(auth);
-      }
-    };
-    initAuth();
-    const unsubscribe = onAuthStateChanged(auth, setUser);
+    // We no longer call signInAnonymously here.
+    // We just listen for the user status.
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      setAuthLoading(false); // Stop loading once Firebase tells us who the user is
+    });
     return () => unsubscribe();
   }, []);
 
+  // --- Login Handler ---
+  const handleLogin = async () => {
+    const provider = new GoogleAuthProvider();
+    try {
+      await signInWithPopup(auth, provider);
+    } catch (error) {
+      console.error("Login failed", error);
+      alert(error.message);
+    }
+  };
+
+  // --- Logout Handler ---
+  const handleLogout = async () => {
+    setTree([]); // Clear local state so next user doesn't see flash of old data
+    setIsLoaded(false);
+    await signOut(auth);
+  };
+  
   // --- Sync (Load) ---
   useEffect(() => {
     if (!user) return;
@@ -307,7 +323,6 @@ export default function App() {
     setTree(newTree);
   };
 
-
   // --- Event Handlers ---
 
   const handleKeyDown = (e, id, text, depth) => {
@@ -369,6 +384,38 @@ export default function App() {
     setDropTarget(null);
   };
 
+  // --- RENDER: 1. Auth Loading ---
+  if (authLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <Loader2 className="animate-spin text-blue-500" />
+      </div>
+    );
+  }
+
+  // --- RENDER: 2. Login Screen (Gatekeeper) ---
+  if (!user) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-gray-50 p-4">
+        <div className="bg-white p-8 rounded-xl shadow-sm border border-gray-100 max-w-sm w-full text-center">
+          <div className="mb-6 bg-blue-100 p-3 rounded-full w-fit mx-auto text-blue-600">
+            <Layout size={32} />
+          </div>
+          <h1 className="text-2xl font-bold text-gray-800 mb-2">Outliner</h1>
+          <p className="text-gray-500 mb-8">Sign in to access your notes.</p>
+          
+          <button 
+            onClick={handleLogin}
+            className="w-full flex items-center justify-center gap-3 bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 px-4 rounded-lg transition-colors"
+          >
+             {/* You can use a Google Icon here if you want, or just text */}
+             <span>Sign in with Google</span>
+          </button>
+        </div>
+      </div>
+    );
+  }
+  
   if (!isLoaded && !tree.length) {
       return (
           <div className="min-h-screen flex items-center justify-center bg-white text-gray-500">
@@ -528,24 +575,16 @@ export default function App() {
       
       {/* Help Footer */}
       <div className="fixed bottom-4 right-4 bg-white p-4 rounded-lg text-xs text-gray-500 border border-gray-200 shadow-sm flex items-center gap-4">
-        <div>
-            <p className="font-semibold mb-1">Shortcuts:</p>
-            <ul className="space-y-1">
-            <li><kbd className="bg-gray-50 px-1 border rounded">Tab</kbd> Indent</li>
-            <li><kbd className="bg-gray-50 px-1 border rounded">Shift+Tab</kbd> Outdent</li>
-            <li><kbd className="bg-gray-50 px-1 border rounded">Enter</kbd> New Item</li>
-            </ul>
-        </div>
         <div className="h-full w-px bg-gray-200 mx-1"></div>
-        <div className="text-gray-400 flex flex-col justify-center min-w-[80px]">
-             <div className="flex items-center gap-1 mb-1">
-                 <User size={10} />
-                 <span className="font-semibold">Session ID</span>
-             </div>
-             <code className="bg-gray-50 p-1 rounded border text-[10px] block w-full overflow-hidden text-ellipsis">
-                 {user ? user.uid.slice(0, 8) : '...'}
-             </code>
-        </div>
+        <div className="flex flex-col items-end gap-1">
+              <span className="font-medium text-gray-700">{user.email}</span>
+              <button 
+                onClick={handleLogout} 
+                className="text-red-500 hover:text-red-600 hover:underline"
+              >
+                Sign Out
+              </button>
+           </div>
       </div>
     </div>
   );
