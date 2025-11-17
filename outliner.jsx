@@ -479,51 +479,51 @@ export default function App() {
                   <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-500 z-10" />
                 )}
                 
-                <div className="relative flex items-center w-14 mr-1 shrink-0 h-7 self-start mt-0.5">
-                   {/* Draggable Handle (Left of Bullet) */}
-                   <div 
-                    className={`
-                      absolute left-0 cursor-move opacity-0 group-hover:opacity-30 hover:!opacity-100 transition-opacity
-                    `}
-                    draggable
-                    onDragStart={(e) => handleDragStart(e, item)}
-                   >
-                        <GripVertical size={16} />
-                   </div>
-
-                  {/* Collapse Toggle */}
-                  {item.children && item.children.length > 0 && (
-                    <button 
-                      onClick={() => toggleCollapse(item.id)}
-                      className={`
-                          absolute text-gray-400 hover:text-gray-600 p-1
-                          ${isSection ? 'left-4 top-0' : 'left-0'}
-                      `}
-                      tabIndex={-1}
+                <div className="flex items-center h-7 self-start mt-0.5 pr-2">
+                    {/* Draggable Handle */}
+                    <div
+                        className="w-6 h-full flex items-center justify-center cursor-move opacity-0 group-hover:opacity-30 hover:!opacity-100 transition-opacity"
+                        draggable
+                        onDragStart={(e) => handleDragStart(e, item)}
                     >
-                      {item.collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
-                    </button>
-                  )}
+                        <GripVertical size={16} />
+                    </div>
 
-                   {/* Checkbox / Section Icon */}
-                   {isSection ? (
-                       // Section Header Icon (Layout icon implies "Section")
-                        <div className="absolute left-8 top-1.5 text-gray-300">
-                            <Layout size={16} />
-                        </div>
-                   ) : (
-                       // Standard Checkbox
-                        <button 
-                            onClick={() => toggleComplete(item.id)}
-                            className={`
-                                absolute left-6 p-0.5 rounded hover:bg-gray-100 transition-colors
-                                ${item.completed ? 'text-green-500' : 'text-gray-300 hover:text-gray-400'}
-                            `}
-                            tabIndex={-1}
-                        >
-                            {item.completed ? <CheckCircle2 size={16} /> : <Circle size={16} />}
-                        </button>
-                   )}
+                    {/* Collapse Toggle or Spacer */}
+                    <div className="w-6 h-full flex items-center justify-center">
+                        {item.children && item.children.length > 0 ? (
+                            <button
+                                onClick={() => toggleCollapse(item.id)}
+                                className="text-gray-400 hover:text-gray-600 p-1 rounded-sm"
+                                tabIndex={-1}
+                            >
+                                {item.collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+                            </button>
+                        ) : (
+                           // Spacer for non-section items to align checkboxes
+                           !isSection && <div className="w-6" />
+                        )}
+                    </div>
+
+                    {/* Checkbox or Section Icon */}
+                    <div className="w-6 h-full flex items-center justify-center">
+                       {isSection ? (
+                           <div className="text-gray-300">
+                                <Layout size={16} />
+                           </div>
+                       ) : (
+                            <button
+                                onClick={() => toggleComplete(item.id)}
+                                className={`
+                                    p-0.5 rounded hover:bg-gray-100 transition-colors
+                                    ${item.completed ? 'text-green-500' : 'text-gray-300 hover:text-gray-400'}
+                                `}
+                                tabIndex={-1}
+                            >
+                                {item.completed ? <CheckCircle2 size={16} /> : <Circle size={16} />}
+                            </button>
+                       )}
+                    </div>
                 </div>
 
                 {/* Input Field */}
