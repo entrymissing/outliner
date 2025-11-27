@@ -2,10 +2,10 @@ import ReactDOM from 'react-dom/client';
 import './index.css';
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { GripVertical, ChevronRight, ChevronDown, Plus, Trash2, Cloud, CloudOff, CheckCircle2, Circle, Loader2, Eye, EyeOff, X, User, Layout } from 'lucide-react';
+import { GripVertical, ChevronRight, ChevronDown, Plus, Trash2, Cloud, CloudOff, CheckCircle2, Circle, Loader2, Eye, EyeOff, X, User, Layout, Moon, Sun, RefreshCw, AlertTriangle } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, onAuthStateChanged, signInWithPopup, signOut, GoogleAuthProvider } from 'firebase/auth';
-import { getFirestore, doc, setDoc, onSnapshot, collection } from 'firebase/firestore';
+import { getFirestore, doc, setDoc, onSnapshot, collection, runTransaction, serverTimestamp } from 'firebase/firestore';
 
 // --- Firebase Configuration & Initialization ---
 // Values are injected at build time via Vite environment variables (VITE_ prefixed).
@@ -76,10 +76,13 @@ export default function App() {
   const [saveStatus, setSaveStatus] = useState('idle'); 
   const [showCompleted, setShowCompleted] = useState(false);
   const [focusedId, setFocusedId] = useState(null);
+  const [darkMode, setDarkMode] = useState(false);
   
   const inputRefs = useRef({});
   const pendingFocus = useRef(null);
   const saveTimeoutRef = useRef(null);
+  const lastSyncedTimestamp = useRef(null);
+  const lastServerTreeStr = useRef(''); // Helps us know if our local changes are actually new
 
   const [draggedItem, setDraggedItem] = useState(null);
   const [dropTarget, setDropTarget] = useState(null);
@@ -123,14 +126,26 @@ export default function App() {
     const unsubscribe = onSnapshot(docRef, (snap) => {
       if (snap.exists()) {
         const data = snap.data();
-        // Update Tree (prevent loops)
-        if (JSON.stringify(data.tree) !== JSON.stringify(tree)) {
-             setTree(data.tree || []);
+        // 1. Update timestamp
+        if (data.updatedAt) {
+            lastSyncedTimestamp.current = data.updatedAt;
         }
+
+        // 2. Update stringified ref so we know this is the latest server state
+        const incomingTreeStr = JSON.stringify(data.tree || []);
+
+        // Only update local state if it's materially different from what we last saw from server
+        // We compare against the ref because `tree` state in this closure might be stale
+        if (incomingTreeStr !== lastServerTreeStr.current) {
+            setTree(data.tree || []);
+        }
+
+        lastServerTreeStr.current = incomingTreeStr;
         setIsLoaded(true);
       } else {
         setTree(DEFAULT_TREE);
-        setDoc(docRef, { tree: DEFAULT_TREE });
+        // Initial create
+        setDoc(docRef, { tree: DEFAULT_TREE, updatedAt: serverTimestamp() });
         setIsLoaded(true);
       }
     }, (error) => {
@@ -146,17 +161,52 @@ export default function App() {
     // Prevent saving empty state over existing data on initial glitch
     if (tree.length === 0 && isLoaded) return;
 
+    // LOOP PREVENTION:
+    // If the current tree is identical to the last thing the server sent us, 
+    // do not trigger a save. This breaks the "Save -> Snapshot -> Save" loop.
+    if (JSON.stringify(tree) === lastServerTreeStr.current) {
+        return;
+    }
+
     setSaveStatus('saving');
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
 
     saveTimeoutRef.current = setTimeout(async () => {
       try {
         const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'data', 'workflowy');
-        await setDoc(docRef, { tree }, { merge: true });
+        
+        await runTransaction(db, async (transaction) => {
+            const sfDoc = await transaction.get(docRef);
+            
+            if (!sfDoc.exists()) {
+                transaction.set(docRef, { tree, updatedAt: serverTimestamp() });
+                return;
+            }
+
+            const serverData = sfDoc.data();
+            const serverTime = serverData.updatedAt;
+            const localBaseTime = lastSyncedTimestamp.current;
+
+            // OPTIMISTIC LOCK CHECK:
+            // If server has a newer timestamp than what we last loaded, abort.
+            if (serverTime && localBaseTime && 
+                serverTime.toMillis() > localBaseTime.toMillis()) {
+                throw new Error("Conflict: Stale Data");
+            }
+
+            transaction.set(docRef, { tree, updatedAt: serverTimestamp() });
+        });
+
         setSaveStatus('saved');
       } catch (err) {
-        console.error("Error saving:", err);
-        setSaveStatus('error');
+        if (err.message === "Conflict: Stale Data") {
+            console.warn("Stale data detected. Aborting save to fetch latest.");
+            setSaveStatus('conflict');
+            // The onSnapshot listener will handle pulling the new data
+        } else {
+            console.error("Error saving:", err);
+            setSaveStatus('error');
+        }
       }
     }, 1000);
 
@@ -169,7 +219,33 @@ export default function App() {
       inputRefs.current[pendingFocus.current].focus();
       pendingFocus.current = null;
     }
-  }, [visibleItems]);
+  }, [visibleItems, focusedId]);
+
+  const parseTextToLinks = (text) => {
+    if (!text) return <span className="opacity-0">Empty</span>;
+
+    const regex = /((?:https?:\/\/[^\s]+)|(?:\bb\/\d+)|(?:\bgo\/[^\s]+))/g;
+    const parts = text.split(regex);
+
+    return parts.map((part, index) => {
+      if (part.match(/^https?:\/\//)) {
+        return (
+          <a key={index} href={part} target="_blank" rel="noopener noreferrer" className="text-blue-600 dark:text-blue-400 hover:underline cursor-pointer relative z-20" onClick={(e) => e.stopPropagation()}>{part}</a>
+        );
+      }
+      if (part.match(/^b\/\d+$/)) {
+        return (
+          <a key={index} href={`http://${part}`} target="_blank" rel="noopener noreferrer" className="text-amber-600 dark:text-amber-400 hover:underline cursor-pointer font-mono relative z-20" onClick={(e) => e.stopPropagation()}>{part}</a>
+        );
+      }
+      if (part.match(/^go\//)) {
+        return (
+          <a key={index} href={`http://${part}`} target="_blank" rel="noopener noreferrer" className="text-emerald-600 dark:text-emerald-400 hover:underline font-medium relative z-20" onClick={(e) => e.stopPropagation()}>{part}</a>
+        );
+      }
+      return <span key={index}>{part}</span>;
+    });
+  };
 
   // --- Actions ---
 
@@ -427,30 +503,36 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 text-gray-800 font-sans selection:bg-blue-100 p-8">
-      <div className="max-w-4xl mx-auto relative bg-white min-h-[80vh] shadow-sm rounded-xl p-8 border border-gray-100">
+    <div className={`min-h-screen transition-colors duration-300 ${darkMode ? 'dark bg-slate-900 text-slate-100' : 'bg-gray-50 text-gray-800'} font-sans p-8`}>
+      <div className={`max-w-4xl mx-auto relative min-h-[80vh] shadow-sm rounded-xl p-8 border transition-colors ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-gray-100'}`}>
         
         {/* Header area */}
-        <div className="flex items-center justify-end mb-6 border-b border-gray-100 pb-4">
+        <div className={`flex items-center justify-end mb-6 border-b pb-4 ${darkMode ? 'border-slate-700' : 'border-gray-100'}`}>
             
-            <div className="flex items-center gap-6">
-                <button 
-                    onClick={() => setShowCompleted(!showCompleted)}
-                    className="flex items-center gap-2 text-sm font-medium text-gray-500 hover:text-gray-800 transition-colors"
-                >
-                    {showCompleted ? <Eye size={16} /> : <EyeOff size={16} />}
-                    {showCompleted ? 'Hide Done' : 'Show Done'}
-                </button>
+          <div className="flex items-center gap-6">
+            <button 
+              onClick={() => setDarkMode(!darkMode)}
+              className={`p-1.5 rounded-full transition-colors ${darkMode ? 'text-yellow-400 hover:bg-slate-700' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'}`}
+              title={darkMode ? "Switch to Light Mode" : "Switch to Dark Mode"}
+            >
+              {darkMode ? <Sun size={18} /> : <Moon size={18} />}
+            </button>
 
-                <div className="flex items-center gap-2 text-sm font-medium text-gray-400 w-20 justify-end">
-                    {saveStatus === 'saving' && <Loader2 size={14} className="animate-spin text-blue-500" />}
-                    {saveStatus === 'saved' && <CheckCircle2 size={14} className="text-green-500" />}
-                    {saveStatus === 'error' && <CloudOff size={14} className="text-red-500" />}
-                    <span className={saveStatus === 'saved' ? 'text-green-600' : ''}>
-                        {saveStatus === 'saving' ? 'Saving' : saveStatus === 'saved' ? 'Saved' : 'Offline'}
-                    </span>
-                </div>
+            <button 
+              onClick={() => setShowCompleted(!showCompleted)}
+              className={`flex items-center gap-2 text-sm font-medium transition-colors ${darkMode ? 'text-slate-400 hover:text-slate-200' : 'text-gray-500 hover:text-gray-800'}`}
+            >
+              {showCompleted ? <Eye size={16} /> : <EyeOff size={16} />}
+              {showCompleted ? 'Hide Done' : 'Show Done'}
+            </button>
+
+            <div className={`flex items-center gap-2 text-sm font-medium justify-end min-w-[80px] ${darkMode ? 'text-slate-500' : 'text-gray-400'}`}>
+              {saveStatus === 'saving' && <><Loader2 size={14} className="animate-spin text-blue-500" /> Saving</>}
+              {saveStatus === 'saved' && <><CheckCircle2 size={14} className="text-green-500" /> <span className="text-green-600">Saved</span></>}
+              {saveStatus === 'error' && <><CloudOff size={14} className="text-red-500" /> Offline</>}
+              {saveStatus === 'conflict' && <><RefreshCw size={14} className="text-amber-500 animate-spin" /> <span className="text-amber-500">Syncing...</span></>}
             </div>
+          </div>
         </div>
         
         <div className="space-y-0.5 pb-40">
@@ -526,23 +608,47 @@ export default function App() {
                    )}
                 </div>
 
-                {/* Input Field */}
-                <div className={`relative flex-1 ${isSection ? 'border-b border-gray-200 pb-1' : ''}`}>
+                {/* Content Area: Switches between Input (Edit) and Div (View/SmartLink) */}
+                <div className={`relative flex-1 ${isSection ? `border-b pb-1 ${darkMode ? 'border-slate-700' : 'border-gray-200'}` : ''}`}>
+                  {focusedId === item.id ? (
                     <input
-                        ref={(el) => (inputRefs.current[item.id] = el)}
-                        value={item.text}
-                        onChange={(e) => updateText(item.id, e.target.value)}
-                        onKeyDown={(e) => handleKeyDown(e, item.id, item.text, item.depth)}
-                        onFocus={() => setFocusedId(item.id)}
-                        className={`
-                            w-full bg-transparent outline-none transition-all
-                            ${isSection 
-                                ? 'text-xl font-bold text-gray-800 placeholder-gray-300' 
-                                : `leading-relaxed ${item.completed ? 'line-through text-gray-400' : 'text-gray-700'}`
-                            }
-                        `}
-                        placeholder={isSection ? "Section Name" : "Type a task..."}
+                      ref={(el) => {
+                        inputRefs.current[item.id] = el;
+                      }}
+                      value={item.text}
+                      onChange={(e) => updateText(item.id, e.target.value)}
+                      onKeyDown={(e) => handleKeyDown(e, item.id, item.text, item.depth)}
+                      autoFocus
+                      className={`
+                        w-full bg-transparent outline-none transition-all
+                        ${isSection 
+                          ? `text-xl font-bold ${darkMode ? 'text-slate-100 placeholder-slate-600' : 'text-gray-800 placeholder-gray-300'}` 
+                          : `leading-relaxed ${item.completed 
+                            ? (darkMode ? 'line-through text-slate-600' : 'line-through text-gray-400') 
+                            : (darkMode ? 'text-slate-200' : 'text-gray-700')}`
+                        }
+                      `}
+                      placeholder={isSection ? "Section Name" : "Type a task..."}
                     />
+                  ) : (
+                    <div 
+                      onClick={() => {
+                        setFocusedId(item.id);
+                        pendingFocus.current = item.id;
+                      }}
+                      className={`
+                        w-full min-h-[1.5em] cursor-text
+                        ${isSection 
+                          ? `text-xl font-bold ${darkMode ? 'text-slate-100' : 'text-gray-800'}` 
+                          : `leading-relaxed ${item.completed 
+                            ? (darkMode ? 'line-through text-slate-600' : 'line-through text-gray-400') 
+                            : (darkMode ? 'text-slate-200' : 'text-gray-700')}`
+                        }
+                      `}
+                    >
+                      {parseTextToLinks(item.text)}
+                    </div>
+                  )}
                 </div>
 
                 {/* Delete Action */}
