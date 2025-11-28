@@ -298,6 +298,8 @@ export default function App() {
       const { nodes, index } = path[path.length - 1];
       nodes.splice(index + 1, 0, newNode);
       setTree(newTree);
+      // Ensure the new node becomes the focused edit target and we request focus
+      setFocusedId(newNode.id);
       pendingFocus.current = newNode.id;
     }
   };
@@ -316,8 +318,10 @@ export default function App() {
       };
       
       newTree.push(newSection);
-      setTree(newTree);
-      pendingFocus.current = newSectionId;
+        setTree(newTree);
+        // Put the new root section into edit mode and request focus
+        setFocusedId(newSectionId);
+        pendingFocus.current = newSectionId;
   };
 
   const deleteNode = (id) => {
@@ -332,7 +336,14 @@ export default function App() {
       const { nodes, index } = path[path.length - 1];
       nodes.splice(index, 1);
       setTree(newTree);
-      if (nextFocusId) pendingFocus.current = nextFocusId;
+      if (nextFocusId) {
+        // make sure the next item is focused after deletion
+        setFocusedId(nextFocusId);
+        pendingFocus.current = nextFocusId;
+      } else {
+        // If there is nothing to focus, clear the focusedId
+        setFocusedId(null);
+      }
     }
   };
 
@@ -355,6 +366,8 @@ export default function App() {
     prevSibling.collapsed = false;
 
     setTree(newTree);
+    // Keep edit focus on the moved item
+    setFocusedId(id);
     pendingFocus.current = id;
   };
 
@@ -371,6 +384,8 @@ export default function App() {
     parentLevel.nodes.splice(parentLevel.index + 1, 0, nodeToMove);
 
     setTree(newTree);
+    // Keep edit focus on the moved item
+    setFocusedId(id);
     pendingFocus.current = id;
   };
 
@@ -417,14 +432,18 @@ export default function App() {
       const index = visibleItems.findIndex(item => item.id === id);
       if (index > 0) {
         const prevId = visibleItems[index - 1].id;
-        inputRefs.current[prevId]?.focus();
+        // Put the previous item in edit mode and request focus
+        setFocusedId(prevId);
+        pendingFocus.current = prevId;
       }
     } else if (e.key === 'ArrowDown') {
       e.preventDefault();
       const index = visibleItems.findIndex(item => item.id === id);
       if (index < visibleItems.length - 1) {
         const nextId = visibleItems[index + 1].id;
-        inputRefs.current[nextId]?.focus();
+        // Put the next item in edit mode and request focus
+        setFocusedId(nextId);
+        pendingFocus.current = nextId;
       }
     }
   };
