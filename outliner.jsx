@@ -81,6 +81,7 @@ export default function App() {
   const inputRefs = useRef({});
   const pendingFocus = useRef(null);
   const saveTimeoutRef = useRef(null);
+  const savingTreeRef = useRef(null);
   const lastSyncedTimestamp = useRef(null);
   const lastServerTreeStr = useRef(''); // Helps us know if our local changes are actually new
 
@@ -134,6 +135,15 @@ export default function App() {
         // 2. Update stringified ref so we know this is the latest server state
         const incomingTreeStr = JSON.stringify(data.tree || []);
 
+        // RACE CONDITION SHIELD:
+        // If a save is in progress and the incoming data is the same as what we're saving,
+        // it's just our own save echoing back. We must not overwrite the local state,
+        // as the user may have made new edits while the save was in-flight.
+        if (savingTreeRef.current && incomingTreeStr === savingTreeRef.current) {
+            lastServerTreeStr.current = incomingTreeStr; // Acknowledge the new baseline
+            return; // Halt: Do not overwrite local state
+        }
+        
         // Only update local state if it's materially different from what we last saw from server
         // We compare against the ref because `tree` state in this closure might be stale
         if (incomingTreeStr !== lastServerTreeStr.current) {
@@ -172,6 +182,12 @@ export default function App() {
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
 
     saveTimeoutRef.current = setTimeout(async () => {
+      // --- RACE CONDITION PREVENTION ---
+      // At the moment of saving, we record exactly what we're about to save.
+      const treeToSave = cloneTree(tree);
+      savingTreeRef.current = JSON.stringify(treeToSave);
+      // ---------------------------------
+      
       try {
         const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'data', 'workflowy');
         
@@ -179,7 +195,7 @@ export default function App() {
             const sfDoc = await transaction.get(docRef);
             
             if (!sfDoc.exists()) {
-                transaction.set(docRef, { tree, updatedAt: serverTimestamp() });
+                transaction.set(docRef, { tree: treeToSave, updatedAt: serverTimestamp() });
                 return;
             }
 
@@ -194,7 +210,7 @@ export default function App() {
                 throw new Error("Conflict: Stale Data");
             }
 
-            transaction.set(docRef, { tree, updatedAt: serverTimestamp() });
+            transaction.set(docRef, { tree: treeToSave, updatedAt: serverTimestamp() });
         });
 
         setSaveStatus('saved');
@@ -207,6 +223,12 @@ export default function App() {
             console.error("Error saving:", err);
             setSaveStatus('error');
         }
+      } finally {
+        // --- RACE CONDITION PREVENTION ---
+        // After the save attempt (success or fail), we clear the ref.
+        // This 'un-silences' the onSnapshot listener for the next legitimate server update.
+        savingTreeRef.current = null;
+        // ---------------------------------
       }
     }, 1000);
 
