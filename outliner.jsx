@@ -221,6 +221,39 @@ export default function App() {
     }
   }, [visibleItems, focusedId]);
 
+  // --- Theme Persistence: initialize from localStorage or system preference ---
+  const getInitialDarkMode = () => {
+    try {
+      const stored = localStorage.getItem('outliner:darkMode');
+      if (stored !== null) return stored === 'true';
+      // Fallback to user's system preference if nothing stored
+      return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    } catch (e) {
+      return false;
+    }
+  };
+
+  // Replace default initializer with the computed value (lazy initializer)
+  useEffect(() => {
+    try {
+      const initial = getInitialDarkMode();
+      setDarkMode(initial);
+    } catch (e) {
+      /* ignore */
+    }
+    // run only once on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Persist theme changes to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem('outliner:darkMode', darkMode ? 'true' : 'false');
+    } catch (e) {
+      // ignore quota / privacy errors
+    }
+  }, [darkMode]);
+
   const parseTextToLinks = (text) => {
     if (!text) return <span className="opacity-0">Empty</span>;
 
