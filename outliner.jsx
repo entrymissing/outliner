@@ -84,6 +84,7 @@ export default function App() {
   const savingTreeRef = useRef(null);
   const lastSyncedTimestamp = useRef(null);
   const lastServerTreeStr = useRef(''); // Helps us know if our local changes are actually new
+  const localVersion = useRef(0);
 
   const [draggedItem, setDraggedItem] = useState(null);
   const [dropTarget, setDropTarget] = useState(null);
@@ -125,39 +126,24 @@ export default function App() {
     const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'data', 'workflowy');
     
     const unsubscribe = onSnapshot(docRef, (snap) => {
-      if (snap.exists()) {
-        const data = snap.data();
-        // 1. Update timestamp
-        if (data.updatedAt) {
-            lastSyncedTimestamp.current = data.updatedAt;
-        }
-
-        // 2. Update stringified ref so we know this is the latest server state
-        const incomingTreeStr = JSON.stringify(data.tree || []);
-
-        // RACE CONDITION SHIELD:
-        // If a save is in progress and the incoming data is the same as what we're saving,
-        // it's just our own save echoing back. We must not overwrite the local state,
-        // as the user may have made new edits while the save was in-flight.
-        if (savingTreeRef.current && incomingTreeStr === savingTreeRef.current) {
-            lastServerTreeStr.current = incomingTreeStr; // Acknowledge the new baseline
-            return; // Halt: Do not overwrite local state
-        }
-        
-        // Only update local state if it's materially different from what we last saw from server
-        // We compare against the ref because `tree` state in this closure might be stale
-        if (incomingTreeStr !== lastServerTreeStr.current) {
-            setTree(data.tree || []);
-        }
-
-        lastServerTreeStr.current = incomingTreeStr;
-        setIsLoaded(true);
-      } else {
+      const data = snap.data();
+      if (!data) {
+        // New user, set default
         setTree(DEFAULT_TREE);
-        // Initial create
-        setDoc(docRef, { tree: DEFAULT_TREE, updatedAt: serverTimestamp() });
+        localVersion.current = 0;
+        lastServerTreeStr.current = JSON.stringify(DEFAULT_TREE);
         setIsLoaded(true);
+        return;
       }
+      const serverTree = data.tree || DEFAULT_TREE;
+      const serverVersion = data.version || 0;
+      if (serverVersion > localVersion.current) {
+        setTree(serverTree);
+        localVersion.current = serverVersion;
+        lastServerTreeStr.current = JSON.stringify(serverTree);
+        lastSyncedTimestamp.current = data.updatedAt || Date.now();
+      }
+      setIsLoaded(true);
     }, (error) => {
       console.error("Error fetching:", error);
       setSaveStatus('error');
@@ -171,23 +157,10 @@ export default function App() {
     // Prevent saving empty state over existing data on initial glitch
     if (tree.length === 0 && isLoaded) return;
 
-    // LOOP PREVENTION:
-    // If the current tree is identical to the last thing the server sent us, 
-    // do not trigger a save. This breaks the "Save -> Snapshot -> Save" loop.
-    if (JSON.stringify(tree) === lastServerTreeStr.current) {
-        return;
-    }
-
     setSaveStatus('saving');
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
 
     saveTimeoutRef.current = setTimeout(async () => {
-      // --- RACE CONDITION PREVENTION ---
-      // At the moment of saving, we record exactly what we're about to save.
-      const treeToSave = cloneTree(tree);
-      savingTreeRef.current = JSON.stringify(treeToSave);
-      // ---------------------------------
-      
       try {
         const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'data', 'workflowy');
         
@@ -195,7 +168,7 @@ export default function App() {
             const sfDoc = await transaction.get(docRef);
             
             if (!sfDoc.exists()) {
-                transaction.set(docRef, { tree: treeToSave, updatedAt: serverTimestamp() });
+                transaction.set(docRef, { tree: tree, version: localVersion.current, updatedAt: serverTimestamp() });
                 return;
             }
 
@@ -210,7 +183,7 @@ export default function App() {
                 throw new Error("Conflict: Stale Data");
             }
 
-            transaction.set(docRef, { tree: treeToSave, updatedAt: serverTimestamp() });
+            transaction.set(docRef, { tree: tree, version: localVersion.current, updatedAt: serverTimestamp() });
         });
 
         setSaveStatus('saved');
@@ -223,12 +196,6 @@ export default function App() {
             console.error("Error saving:", err);
             setSaveStatus('error');
         }
-      } finally {
-        // --- RACE CONDITION PREVENTION ---
-        // After the save attempt (success or fail), we clear the ref.
-        // This 'un-silences' the onSnapshot listener for the next legitimate server update.
-        savingTreeRef.current = null;
-        // ---------------------------------
       }
     }, 1000);
 
@@ -277,6 +244,7 @@ export default function App() {
     if (path) {
       path[path.length - 1].nodes[path[path.length - 1].index].text = newText;
       setTree(newTree);
+      localVersion.current++;
     }
   };
 
@@ -287,6 +255,7 @@ export default function App() {
       const node = path[path.length - 1].node;
       node.collapsed = !node.collapsed;
       setTree(newTree);
+      localVersion.current++;
     }
   };
 
@@ -308,6 +277,7 @@ export default function App() {
           markChildren(node.children);
       }
       setTree(newTree);
+      localVersion.current++;
     }
   };
 
@@ -320,6 +290,7 @@ export default function App() {
       const { nodes, index } = path[path.length - 1];
       nodes.splice(index + 1, 0, newNode);
       setTree(newTree);
+      localVersion.current++;
       // Ensure the new node becomes the focused edit target and we request focus
       setFocusedId(newNode.id);
       pendingFocus.current = newNode.id;
@@ -341,6 +312,7 @@ export default function App() {
       
       newTree.push(newSection);
         setTree(newTree);
+        localVersion.current++;
         // Put the new root section into edit mode and request focus
         setFocusedId(newSectionId);
         pendingFocus.current = newSectionId;
@@ -358,6 +330,7 @@ export default function App() {
       const { nodes, index } = path[path.length - 1];
       nodes.splice(index, 1);
       setTree(newTree);
+      localVersion.current++;
       if (nextFocusId) {
         // make sure the next item is focused after deletion
         setFocusedId(nextFocusId);
@@ -388,6 +361,7 @@ export default function App() {
     prevSibling.collapsed = false;
 
     setTree(newTree);
+    localVersion.current++;
     // Keep edit focus on the moved item
     setFocusedId(id);
     pendingFocus.current = id;
@@ -406,6 +380,7 @@ export default function App() {
     parentLevel.nodes.splice(parentLevel.index + 1, 0, nodeToMove);
 
     setTree(newTree);
+    localVersion.current++;
     // Keep edit focus on the moved item
     setFocusedId(id);
     pendingFocus.current = id;
@@ -434,6 +409,7 @@ export default function App() {
     }
 
     setTree(newTree);
+    localVersion.current++;
   };
 
   // --- Event Handlers ---
