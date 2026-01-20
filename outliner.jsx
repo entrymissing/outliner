@@ -141,7 +141,7 @@ export default function App() {
         setTree(serverTree);
         localVersion.current = serverVersion;
         lastServerTreeStr.current = JSON.stringify(serverTree);
-        lastSyncedTimestamp.current = data.updatedAt || Date.now();
+        lastSyncedTimestamp.current = data.updatedAt ? data.updatedAt.toMillis() : Date.now();
       }
       setIsLoaded(true);
     }, (error) => {
@@ -168,34 +168,23 @@ export default function App() {
             const sfDoc = await transaction.get(docRef);
             
             if (!sfDoc.exists()) {
-                transaction.set(docRef, { tree: tree, version: localVersion.current, updatedAt: serverTimestamp() });
+                transaction.set(docRef, { tree: tree, version: 1, updatedAt: serverTimestamp() });
+                localVersion.current = 1;
+                lastSyncedTimestamp.current = Date.now();
                 return;
             }
 
             const serverData = sfDoc.data();
-            const serverTime = serverData.updatedAt;
-            const localBaseTime = lastSyncedTimestamp.current;
 
-            // OPTIMISTIC LOCK CHECK:
-            // If server has a newer timestamp than what we last loaded, abort.
-            if (serverTime && localBaseTime && 
-                serverTime.toMillis() > localBaseTime.toMillis()) {
-                throw new Error("Conflict: Stale Data");
-            }
-
-            transaction.set(docRef, { tree: tree, version: localVersion.current, updatedAt: serverTimestamp() });
+            transaction.set(docRef, { tree: tree, version: localVersion.current + 1, updatedAt: serverTimestamp() });
+            localVersion.current += 1;
+            lastSyncedTimestamp.current = Date.now();
         });
 
         setSaveStatus('saved');
       } catch (err) {
-        if (err.message === "Conflict: Stale Data") {
-            console.warn("Stale data detected. Aborting save to fetch latest.");
-            setSaveStatus('conflict');
-            // The onSnapshot listener will handle pulling the new data
-        } else {
             console.error("Error saving:", err);
             setSaveStatus('error');
-        }
       }
     }, 1000);
 
