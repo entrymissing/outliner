@@ -157,6 +157,9 @@ export default function App() {
     // Prevent saving empty state over existing data on initial glitch
     if (tree.length === 0 && isLoaded) return;
 
+    // FIX: Don't save if the current tree matches what we just loaded from the server
+    if (JSON.stringify(tree) === lastServerTreeStr.current) return;
+
     setSaveStatus('saving');
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
 
