@@ -69,7 +69,7 @@ const DEFAULT_TREE = [
 
 export default function App() {
   // --- State ---
-  const [tree, setTree] = useState([]); 
+  const [tree, setTree] = useState(null); // Start as null to distinguish from "loaded empty data"
   const [user, setUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [isLoaded, setIsLoaded] = useState(false);
@@ -89,7 +89,7 @@ export default function App() {
   const [draggedItem, setDraggedItem] = useState(null);
   const [dropTarget, setDropTarget] = useState(null);
 
-  const visibleItems = flattenTree(tree, 0, [], showCompleted);
+  const visibleItems = tree ? flattenTree(tree, 0, [], showCompleted) : [];
 
 // --- Auth Effect (Changed) ---
   useEffect(() => {
@@ -115,7 +115,7 @@ export default function App() {
 
   // --- Logout Handler ---
   const handleLogout = async () => {
-    setTree([]); // Clear local state so next user doesn't see flash of old data
+    setTree(null); // Clear local state so next user doesn't see flash of old data
     setIsLoaded(false);
     await signOut(auth);
   };
@@ -153,9 +153,12 @@ export default function App() {
 
   // --- Sync (Save) ---
   useEffect(() => {
-    if (!user || !isLoaded) return;
-    // Prevent saving empty state over existing data on initial glitch
-    if (tree.length === 0 && isLoaded) return;
+    // Only save if:
+    // 1. User is logged in
+    // 2. Data has finished loading (to avoid race condition on mount)
+    // 3. Tree is not null (initialization guard)
+    // 4. Tree is not empty (guard against overwriting with blank slate)
+    if (!user || !isLoaded || tree === null || tree.length === 0) return;
 
     // FIX: Don't save if the current tree matches what we just loaded from the server
     if (JSON.stringify(tree) === lastServerTreeStr.current) return;
@@ -534,7 +537,7 @@ export default function App() {
     );
   }
   
-  if (!isLoaded && !tree.length) {
+  if (!isLoaded) {
       return (
           <div className="min-h-screen flex items-center justify-center bg-white text-gray-500">
               <div className="flex items-center gap-2">
