@@ -8,29 +8,25 @@ A live version of this project is running at [entrymissing.github.io/outliner](h
 
 *   Infinite outlining of bullet points.
 *   Login via Google Authentication.
-*   Backend powered by Firebase.
+*   Single Markdown file in Google Drive is the Source-of-Truth (no Firebase).
 
 ## Local Development
 
-To run this project locally, you will need to set up your own Firebase project.
+This version uses Google OAuth 2.0 and the Google Drive API. You will need a Google OAuth Client ID for a web application.
 
-1.  Create a Firebase project at [https://firebase.google.com/](https://firebase.google.com/).
-2.  In your project settings, find your Firebase config.
-3.  Create a `.env.local` file in the root of this project.
-4.  Copy the contents of `.env.local.example` into your new `.env.local` file.
-5.  Replace the placeholder values in `.env.local` with your Firebase project's configuration values.
+1.  Create OAuth 2.0 Client Credentials in Google Cloud Console and configure an Authorized JavaScript origin for your dev host (e.g., `http://localhost:5173`).
+2.  Create a `.env.local` file in the root of this project.
+3.  Add the `VITE_GOOGLE_CLIENT_ID` environment variable to your `.env.local` file.
 
-Your `.env.local` file should look like this:
+Your `.env.local` file should include:
 
 ```
-VITE_FIREBASE_API_KEY=your_api_key_here
-VITE_FIREBASE_AUTH_DOMAIN=your-project.firebaseapp.com
-VITE_FIREBASE_PROJECT_ID=your-project-id
-VITE_FIREBASE_STORAGE_BUCKET=your-project.appspot.com
-VITE_FIREBASE_MESSAGING_SENDER_ID=your_messaging_sender_id
-VITE_FIREBASE_APP_ID=your_app_id
-VITE_FIREBASE_MEASUREMENT_ID=your_measurement_id
+VITE_GOOGLE_CLIENT_ID=your_google_web_client_id.apps.googleusercontent.com
 ```
+
+When you sign in the app will search for a file named `Outliner.md` in your Drive. If none is found the app will create one and use it as the single Markdown Source-of-Truth.
+
+The `Outliner.md` file is intended to be a read-only source for external tooling (ML/agents) to gather project context and status.
 
 Once you have created your `.env.local` file, you can install the dependencies and run the development server:
 

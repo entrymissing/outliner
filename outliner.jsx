@@ -3,26 +3,34 @@ import './index.css';
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { GripVertical, ChevronRight, ChevronDown, Plus, Trash2, Cloud, CloudOff, CheckCircle2, Circle, Loader2, Eye, EyeOff, X, User, Layout, Moon, Sun, RefreshCw, AlertTriangle } from 'lucide-react';
-import { initializeApp } from 'firebase/app';
-import { getAuth, onAuthStateChanged, signInWithPopup, signOut, GoogleAuthProvider } from 'firebase/auth';
-import { getFirestore, doc, setDoc, onSnapshot, collection, runTransaction, serverTimestamp } from 'firebase/firestore';
+// Google OAuth + Drive integration (replaces Firebase)
+// The app expects a Vite env var named VITE_GOOGLE_CLIENT_ID containing a valid
+// Google OAuth Client ID for browser-based OAuth. Add this to `.env.local`.
+const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
 
-// --- Firebase Configuration & Initialization ---
-// Values are injected at build time via Vite environment variables (VITE_ prefixed).
-// For local development create a `.env.local` with the same VITE_* keys.
-const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-  appId: import.meta.env.VITE_FIREBASE_APP_ID,
-  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID,
+// Drive file name we use as the single Source of Truth
+const DRIVE_FILE_NAME = 'Outliner.md';
+
+// Helper to check auth availability (token kept in memory - not persisted)
+
+// Note: We rely on the Google Identity Services script loaded in `index.html`:
+// <script src="https://accounts.google.com/gsi/client" async defer></script>
+
+// Scopes: drive.file for read/write access to files created/opened by the app.
+const DRIVE_SCOPES = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly';
+
+// Globals: token client and current access token
+let tokenClient = null; // google.accounts.oauth2.TokenClient
+
+// Utility: fetch helper that attaches current access token
+const authFetch = async (url, opts = {}, accessToken) => {
+  const headers = Object.assign({}, opts.headers || {}, {
+    'Authorization': `Bearer ${accessToken}`,
+  });
+  const res = await fetch(url, Object.assign({}, opts, { headers }));
+  if (!res.ok) throw new Error(`HTTP ${res.status} - ${await res.text()}`);
+  return res;
 };
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 
 // --- Utility Functions ---
 
@@ -71,12 +79,20 @@ export default function App() {
   // --- State ---
   const [tree, setTree] = useState(null); // Start as null to distinguish from "loaded empty data"
   const [user, setUser] = useState(null);
+  const [accessToken, setAccessToken] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [isLoaded, setIsLoaded] = useState(false);
   const [saveStatus, setSaveStatus] = useState('idle'); 
   const [showCompleted, setShowCompleted] = useState(false);
   const [focusedId, setFocusedId] = useState(null);
   const [darkMode, setDarkMode] = useState(false);
+
+  // Drive / sync refs
+  const driveFileId = useRef(null);
+  const lastRemoteMarkdown = useRef('');
+  const pollIntervalRef = useRef(null);
+  const lastInteractionRef = useRef(Date.now());
+  const isStaleLockRef = useRef(false); // prevents edits until we re-fetch if stale
   
   const inputRefs = useRef({});
   const pendingFocus = useRef(null);
@@ -91,111 +107,205 @@ export default function App() {
 
   const visibleItems = tree ? flattenTree(tree, 0, [], showCompleted) : [];
 
-// --- Auth Effect (Changed) ---
+// --- Google Auth Initialization ---
   useEffect(() => {
-    // We no longer call signInAnonymously here.
-    // We just listen for the user status.
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
-      setAuthLoading(false); // Stop loading once Firebase tells us who the user is
-    });
-    return () => unsubscribe();
+    if (!GOOGLE_CLIENT_ID) {
+      console.warn('VITE_GOOGLE_CLIENT_ID is not set. Google sign-in will not function.');
+      setAuthLoading(false);
+      return;
+    }
+
+    try {
+      if (window.google && !tokenClient) {
+        tokenClient = window.google.accounts.oauth2.initTokenClient({
+          client_id: GOOGLE_CLIENT_ID,
+          scope: DRIVE_SCOPES,
+          callback: async (resp) => {
+            if (resp.error) {
+              console.error('Token client error', resp);
+              setAuthLoading(false);
+              return;
+            }
+            if (resp.access_token) {
+              setAccessToken(resp.access_token);
+              setAuthLoading(false);
+              // Fetch basic userinfo so we can display an email
+              try {
+                const r = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { "Authorization": `Bearer ${resp.access_token}` } });
+                if (r.ok) {
+                  setUser(await r.json());
+                }
+              } catch (e) {
+                console.error('Error fetching userinfo', e);
+              }
+            }
+          }
+        });
+      }
+    } catch (e) {
+      console.error('Auth init failed', e);
+    } finally {
+      setAuthLoading(false);
+    }
   }, []);
 
   // --- Login Handler ---
   const handleLogin = async () => {
-    const provider = new GoogleAuthProvider();
+    if (!tokenClient) {
+      alert('Google auth client not initialized. Ensure `VITE_GOOGLE_CLIENT_ID` is set and the Google Identity script is loaded.');
+      return;
+    }
     try {
-      await signInWithPopup(auth, provider);
-    } catch (error) {
-      console.error("Login failed", error);
-      alert(error.message);
+      // This will trigger the token client callback which sets the access token and user
+      tokenClient.requestAccessToken({ prompt: 'consent' });
+    } catch (err) {
+      console.error('Login failed', err);
+      alert(err.message || 'Login failed');
     }
   };
 
   // --- Logout Handler ---
   const handleLogout = async () => {
-    setTree(null); // Clear local state so next user doesn't see flash of old data
+    try {
+      if (accessToken) {
+        await fetch(`https://oauth2.googleapis.com/revoke?token=${accessToken}`, { method: 'POST', headers: { 'Content-type': 'application/x-www-form-urlencoded' } });
+      }
+    } catch (e) {
+      console.warn('Failed to revoke token', e);
+    }
+
+    setTree(null);
     setIsLoaded(false);
-    await signOut(auth);
+    setUser(null);
+    setAccessToken(null);
+    driveFileId.current = null;
+    lastRemoteMarkdown.current = '';
   };
   
-  // --- Sync (Load) ---
+  // --- Drive Sync (Load + Poll) ---
   useEffect(() => {
-    if (!user) return;
-    const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'data', 'workflowy');
-    
-    const unsubscribe = onSnapshot(docRef, (snap) => {
-      const data = snap.data();
-      if (!data) {
-        // New user, set default
-        setTree(DEFAULT_TREE);
-        localVersion.current = 0;
-        lastServerTreeStr.current = JSON.stringify(DEFAULT_TREE);
-        setIsLoaded(true);
-        return;
+    if (!accessToken) return;
+    let cancelled = false;
+
+    const findOrCreateAndLoad = async () => {
+      try {
+        // 1) Search for the file
+        const q = encodeURIComponent(`name='${DRIVE_FILE_NAME}' and trashed=false`);
+        const listRes = await authFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,modifiedTime,size)&pageSize=10`, {}, accessToken);
+        const listData = await listRes.json();
+
+        let fileId = null;
+        if (listData.files && listData.files.length > 0) {
+          fileId = listData.files[0].id;
+          // If file exists, fetch its content
+          const contentRes = await authFetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {}, accessToken);
+          const mdText = await contentRes.text();
+          lastRemoteMarkdown.current = mdText;
+          const parsed = markdownToTree(mdText);
+          setTree(parsed);
+          setIsLoaded(true);
+          lastSyncedTimestamp.current = new Date(listData.files[0].modifiedTime).getTime();
+        } else {
+          // Create an empty file with default content
+          const createRes = await fetch('https://www.googleapis.com/drive/v3/files', {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: DRIVE_FILE_NAME, mimeType: 'text/markdown' })
+          });
+          const created = await createRes.json();
+          fileId = created.id;
+          const md = treeToMarkdown(DEFAULT_TREE);
+          await fetch(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`, {
+            method: 'PATCH',
+            headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'text/markdown' },
+            body: md
+          });
+          lastRemoteMarkdown.current = md;
+          setTree(DEFAULT_TREE);
+          setIsLoaded(true);
+          lastSyncedTimestamp.current = Date.now();
+        }
+
+        driveFileId.current = fileId;
+        setSaveStatus('saved');
+      } catch (e) {
+        console.error('Error loading Drive file:', e);
+        setSaveStatus('error');
       }
-      const serverTree = data.tree || DEFAULT_TREE;
-      const serverVersion = data.version || 0;
-      if (serverVersion > localVersion.current) {
-        setTree(serverTree);
-        localVersion.current = serverVersion;
-        lastServerTreeStr.current = JSON.stringify(serverTree);
-        lastSyncedTimestamp.current = data.updatedAt ? data.updatedAt.toMillis() : Date.now();
+    };
+
+    findOrCreateAndLoad();
+
+    // 2) Poll for changes every 15 minutes
+    if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+    pollIntervalRef.current = setInterval(async () => {
+      try {
+        if (!driveFileId.current) return;
+        const infoRes = await authFetch(`https://www.googleapis.com/drive/v3/files/${driveFileId.current}?fields=modifiedTime`, {}, accessToken);
+        const info = await infoRes.json();
+        const remoteModified = new Date(info.modifiedTime).getTime();
+        if (!lastSyncedTimestamp.current || remoteModified > lastSyncedTimestamp.current) {
+          // remote changed, fetch content
+          const remoteRes = await authFetch(`https://www.googleapis.com/drive/v3/files/${driveFileId.current}?alt=media`, {}, accessToken);
+          const md = await remoteRes.text();
+          if (md !== lastRemoteMarkdown.current) {
+            lastRemoteMarkdown.current = md;
+            setTree(markdownToTree(md));
+            lastSyncedTimestamp.current = remoteModified;
+            setSaveStatus('saved');
+          }
+        }
+      } catch (e) {
+        console.error('Polling error', e);
       }
-      setIsLoaded(true);
-    }, (error) => {
-      console.error("Error fetching:", error);
+    }, 15 * 60 * 1000);
+
+    return () => {
+      cancelled = true;
+      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+    };
+  }, [accessToken]);
+
+  // --- Drive Sync (Save) ---
+  useEffect(() => {
+    if (!accessToken || !isLoaded || tree === null) return;
+
+    // Prevent saving an empty local state over a non-empty remote file
+    const localMd = treeToMarkdown(tree);
+    if (localMd.trim() === '' && lastRemoteMarkdown.current && lastRemoteMarkdown.current.trim() !== '') {
+      // Abort save and surface an error state
       setSaveStatus('error');
-    });
-    return () => unsubscribe();
-  }, [user]); 
+      console.warn('Prevented overwriting non-empty remote file with empty local state');
+      return;
+    }
 
-  // --- Sync (Save) ---
-  useEffect(() => {
-    // Only save if:
-    // 1. User is logged in
-    // 2. Data has finished loading (to avoid race condition on mount)
-    // 3. Tree is not null (initialization guard)
-    // 4. Tree is not empty (guard against overwriting with blank slate)
-    if (!user || !isLoaded || tree === null || tree.length === 0) return;
-
-    // FIX: Don't save if the current tree matches what we just loaded from the server
-    if (JSON.stringify(tree) === lastServerTreeStr.current) return;
+    // No-op if same as what we last loaded
+    if (localMd === lastRemoteMarkdown.current) return;
 
     setSaveStatus('saving');
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
 
     saveTimeoutRef.current = setTimeout(async () => {
       try {
-        const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'data', 'workflowy');
-        
-        await runTransaction(db, async (transaction) => {
-            const sfDoc = await transaction.get(docRef);
-            
-            if (!sfDoc.exists()) {
-                transaction.set(docRef, { tree: tree, version: 1, updatedAt: serverTimestamp() });
-                localVersion.current = 1;
-                lastSyncedTimestamp.current = Date.now();
-                return;
-            }
+        if (!driveFileId.current) throw new Error('No Drive file id');
 
-            const serverData = sfDoc.data();
-
-            transaction.set(docRef, { tree: tree, version: localVersion.current + 1, updatedAt: serverTimestamp() });
-            localVersion.current += 1;
-            lastSyncedTimestamp.current = Date.now();
+        await fetch(`https://www.googleapis.com/upload/drive/v3/files/${driveFileId.current}?uploadType=media`, {
+          method: 'PATCH',
+          headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'text/markdown' },
+          body: localMd
         });
 
+        lastRemoteMarkdown.current = localMd;
+        lastSyncedTimestamp.current = Date.now();
         setSaveStatus('saved');
       } catch (err) {
-            console.error("Error saving:", err);
-            setSaveStatus('error');
+        console.error('Error saving to Drive:', err);
+        setSaveStatus('error');
       }
     }, 1000);
 
     return () => clearTimeout(saveTimeoutRef.current);
-  }, [tree, user, isLoaded]);
+  }, [tree, accessToken, isLoaded]);
 
   // --- Focus Restoration ---
   useEffect(() => {
@@ -216,6 +326,17 @@ export default function App() {
       return false;
     }
   };
+
+  // Track user activity for inactivity checks
+  useEffect(() => {
+    const touch = () => { lastInteractionRef.current = Date.now(); };
+    window.addEventListener('click', touch);
+    window.addEventListener('keydown', touch);
+    return () => {
+      window.removeEventListener('click', touch);
+      window.removeEventListener('keydown', touch);
+    };
+  }, []);
 
   // Replace default initializer with the computed value (lazy initializer)
   useEffect(() => {
@@ -264,9 +385,132 @@ export default function App() {
     });
   };
 
+  // --- Markdown Parser / Serializer ---
+
+  // Converts a markdown string into the app's tree structure and back.
+  const markdownToTree = (md) => {
+    const lines = (md || '').split('\n');
+    const sections = [];
+    let currentSection = null;
+    let currentProject = null;
+
+    const headerRE = /^#\s+(.*)$/;
+    const bulletRE = /^\s*[-*]\s+(.*)$/;
+    const nestedBulletRE = /^\s{2,}[-*]\s+(.*)$/; // first nested level
+
+    for (const rawLine of lines) {
+      const line = rawLine.replace(/\r$/, '');
+      const h = line.match(headerRE);
+      if (h) {
+        currentSection = { id: generateId(), text: h[1].trim(), completed: false, collapsed: false, children: [] };
+        sections.push(currentSection);
+        currentProject = null;
+        continue;
+      }
+
+      const nb = line.match(nestedBulletRE);
+      if (nb && currentProject) {
+        // nested bullet: treat first nested bullet as metadata (links), subsequent as status notes
+        const child = { id: generateId(), text: nb[1].trim(), completed: false, collapsed: false, children: [] };
+        currentProject.children = currentProject.children || [];
+        currentProject.children.push(child);
+        continue;
+      }
+
+      const b = line.match(bulletRE);
+      if (b && currentSection) {
+        // top-level project under current section
+        currentProject = { id: generateId(), text: b[1].trim(), completed: false, collapsed: false, children: [] };
+        currentSection.children.push(currentProject);
+        continue;
+      }
+
+      // ignore other lines
+    }
+
+    // If the file had no sections, provide a default
+    if (sections.length === 0) return cloneTree(DEFAULT_TREE);
+    return sections;
+  };
+
+  const normalizeTreeForSave = (tree) => {
+    const copy = cloneTree(tree);
+    // Flatten deeper-than-allowed nesting: we only allow Section -> Projects -> Status/Metadata bullets
+    const normalized = copy.map(section => {
+      if (!section.children) return section;
+      section.children = section.children.map(project => {
+        // collect any nested grandchildren into this project's children as status notes
+        const newChildren = [];
+        if (project.children && project.children.length > 0) {
+          const queue = [...project.children];
+          while (queue.length > 0) {
+            const c = queue.shift();
+            newChildren.push({ id: generateId(), text: c.text, completed: !!c.completed, children: [] });
+            if (c.children && c.children.length > 0) {
+              // append grandchildren to queue (flatten)
+              for (const gg of c.children) queue.push(gg);
+            }
+          }
+        }
+        project.children = newChildren;
+        return project;
+      });
+      return section;
+    });
+    return normalized;
+  };
+
+  const treeToMarkdown = (tree) => {
+    const normalized = normalizeTreeForSave(tree);
+    let out = '';
+    for (const section of normalized) {
+      out += `# ${section.text || ''}\n\n`;
+      if (section.children && section.children.length > 0) {
+        for (const project of section.children) {
+          out += `- ${project.text || ''}\n`;
+          if (project.children && project.children.length > 0) {
+            for (const child of project.children) {
+              out += `  - ${child.text || ''}\n`;
+            }
+          }
+        }
+      }
+      out += '\n';
+    }
+    return out.trim() + '\n';
+  };
+
   // --- Actions ---
 
-  const updateText = (id, newText) => {
+  const ensureFreshBeforeEdit = async () => {
+    // If user was inactive for > 60 minutes, re-fetch remote and apply before allowing edits
+    if (!accessToken || !driveFileId.current) return true; // unable to check
+    const now = Date.now();
+    if (now - lastInteractionRef.current < (60 * 60 * 1000)) return true;
+    if (isStaleLockRef.current) return false;
+    isStaleLockRef.current = true;
+    try {
+      const res = await authFetch(`https://www.googleapis.com/drive/v3/files/${driveFileId.current}?alt=media`, {}, accessToken);
+      const md = await res.text();
+      if (md !== lastRemoteMarkdown.current) {
+        lastRemoteMarkdown.current = md;
+        setTree(markdownToTree(md));
+      }
+      lastSyncedTimestamp.current = Date.now();
+      return true;
+    } catch (e) {
+      console.error('Failed to refresh before edit', e);
+      return false;
+    } finally {
+      isStaleLockRef.current = false;
+    }
+  };
+
+  const updateText = async (id, newText) => {
+    lastInteractionRef.current = Date.now();
+    const ok = await ensureFreshBeforeEdit();
+    if (!ok) return;
+
     const newTree = cloneTree(tree);
     const path = findNodePath(newTree, id);
     if (path) {
@@ -276,7 +520,11 @@ export default function App() {
     }
   };
 
-  const toggleCollapse = (id) => {
+  const toggleCollapse = async (id) => {
+    lastInteractionRef.current = Date.now();
+    const ok = await ensureFreshBeforeEdit();
+    if (!ok) return;
+
     const newTree = cloneTree(tree);
     const path = findNodePath(newTree, id);
     if (path) {
@@ -287,7 +535,11 @@ export default function App() {
     }
   };
 
-  const toggleComplete = (id) => {
+  const toggleComplete = async (id) => {
+    lastInteractionRef.current = Date.now();
+    const ok = await ensureFreshBeforeEdit();
+    if (!ok) return;
+
     const newTree = cloneTree(tree);
     const path = findNodePath(newTree, id);
     if (path) {
@@ -309,7 +561,11 @@ export default function App() {
     }
   };
 
-  const addNode = (afterId, isSection = false) => {
+  const addNode = async (afterId, isSection = false) => {
+    lastInteractionRef.current = Date.now();
+    const ok = await ensureFreshBeforeEdit();
+    if (!ok) return;
+
     const newTree = cloneTree(tree);
     const newNode = { id: generateId(), text: '', completed: false, collapsed: false, children: [] };
     
@@ -326,7 +582,11 @@ export default function App() {
   };
 
   // Used only for empty state recovery
-  const addRootNode = () => {
+  const addRootNode = async () => {
+      lastInteractionRef.current = Date.now();
+      const ok = await ensureFreshBeforeEdit();
+      if (!ok) return;
+
       const newTree = cloneTree(tree);
       const newSectionId = generateId();
       
@@ -346,7 +606,11 @@ export default function App() {
         pendingFocus.current = newSectionId;
   };
 
-  const deleteNode = (id) => {
+  const deleteNode = async (id) => {
+    lastInteractionRef.current = Date.now();
+    const ok = await ensureFreshBeforeEdit();
+    if (!ok) return;
+
     const currentIndex = visibleItems.findIndex(item => item.id === id);
     let nextFocusId = null;
     if (currentIndex > 0) nextFocusId = visibleItems[currentIndex - 1].id;
@@ -370,7 +634,11 @@ export default function App() {
     }
   };
 
-  const indentNode = (id) => {
+  const indentNode = async (id) => {
+    lastInteractionRef.current = Date.now();
+    const ok = await ensureFreshBeforeEdit();
+    if (!ok) return;
+
     const newTree = cloneTree(tree);
     const path = findNodePath(newTree, id);
     if (!path) return;
@@ -395,7 +663,11 @@ export default function App() {
     pendingFocus.current = id;
   };
 
-  const outdentNode = (id) => {
+  const outdentNode = async (id) => {
+    lastInteractionRef.current = Date.now();
+    const ok = await ensureFreshBeforeEdit();
+    if (!ok) return;
+
     const newTree = cloneTree(tree);
     const path = findNodePath(newTree, id);
     if (!path || path.length < 2) return;
@@ -414,7 +686,11 @@ export default function App() {
     pendingFocus.current = id;
   };
 
-  const moveNode = (draggedId, targetId, position) => {
+  const moveNode = async (draggedId, targetId, position) => {
+    lastInteractionRef.current = Date.now();
+    const ok = await ensureFreshBeforeEdit();
+    if (!ok) return;
+
     if (draggedId === targetId) return;
     const newTree = cloneTree(tree);
     
@@ -691,7 +967,26 @@ export default function App() {
                         }
                       `}
                     >
-                      {parseTextToLinks(item.text)}
+                      <div className="flex items-center justify-between">
+                        <div>{parseTextToLinks(item.text)}</div>
+
+                        {/* Metadata Links: first nested child that contains URLs (Notes Doc / Tracking bug) */}
+                        {item.depth === 1 && item.children && item.children.length > 0 && (() => {
+                          const meta = item.children[0].text || '';
+                          const urlRE = /(https?:\/\/[^\s]+)/g;
+                          const matches = meta.match(urlRE) || [];
+                          if (matches.length === 0) return null;
+                          return (
+                            <div className="flex items-center gap-2 ml-4">
+                              {matches.map((u, i) => (
+                                <a key={i} href={u} target="_blank" rel="noopener noreferrer" className="text-sm text-blue-600 dark:text-blue-400 hover:underline ml-2" onClick={(e) => e.stopPropagation()}>
+                                  {u.replace(/^https?:\/\//, '')}
+                                </a>
+                              ))}
+                            </div>
+                          );
+                        })()}
+                      </div>
                     </div>
                   )}
                 </div>
