@@ -115,38 +115,82 @@ export default function App() {
       return;
     }
 
-    try {
-      if (window.google && !tokenClient) {
-        tokenClient = window.google.accounts.oauth2.initTokenClient({
-          client_id: GOOGLE_CLIENT_ID,
-          scope: DRIVE_SCOPES,
-          callback: async (resp) => {
-            if (resp.error) {
-              console.error('Token client error', resp);
-              setAuthLoading(false);
-              return;
-            }
-            if (resp.access_token) {
-              setAccessToken(resp.access_token);
-              setAuthLoading(false);
-              // Fetch basic userinfo so we can display an email
-              try {
-                const r = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { "Authorization": `Bearer ${resp.access_token}` } });
-                if (r.ok) {
-                  setUser(await r.json());
+    let mounted = true;
+    let intervalId = null;
+
+    const initTokenClient = async () => {
+      try {
+        if (window.google && !tokenClient) {
+          tokenClient = window.google.accounts.oauth2.initTokenClient({
+            client_id: GOOGLE_CLIENT_ID,
+            scope: DRIVE_SCOPES,
+            callback: async (resp) => {
+              if (resp.error) {
+                console.error('Token client error', resp);
+                if (mounted) setAuthLoading(false);
+                return;
+              }
+              if (resp.access_token) {
+                if (mounted) setAccessToken(resp.access_token);
+                if (mounted) setAuthLoading(false);
+                // Fetch basic userinfo so we can display an email
+                try {
+                  const r = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { "Authorization": `Bearer ${resp.access_token}` } });
+                  if (r.ok && mounted) {
+                    setUser(await r.json());
+                  }
+                } catch (e) {
+                  console.error('Error fetching userinfo', e);
                 }
-              } catch (e) {
-                console.error('Error fetching userinfo', e);
               }
             }
+          });
+          // If initialization succeeded, stop polling
+          if (intervalId) {
+            clearInterval(intervalId);
+            intervalId = null;
           }
-        });
+        }
+      } catch (e) {
+        console.error('Auth init failed', e);
+      } finally {
+        if (mounted) setAuthLoading(false);
       }
-    } catch (e) {
-      console.error('Auth init failed', e);
-    } finally {
-      setAuthLoading(false);
+    };
+
+    // Try immediate initialization, then poll briefly if the google script hasn't loaded yet
+    initTokenClient();
+
+    if (!window.google) {
+      let attempts = 0;
+      intervalId = setInterval(() => {
+        attempts += 1;
+        initTokenClient();
+        if (window.google || attempts >= 10) {
+          if (intervalId) {
+            clearInterval(intervalId);
+            intervalId = null;
+          }
+        }
+      }, 200);
+
+      // Safety timeout: if not initialized after ~2.5s, stop trying and warn
+      setTimeout(() => {
+        if (intervalId) {
+          clearInterval(intervalId);
+          intervalId = null;
+        }
+        if (!tokenClient) {
+          console.warn('Google Identity script did not load in time; token client not initialized.');
+          if (mounted) setAuthLoading(false);
+        }
+      }, 2500);
     }
+
+    return () => {
+      mounted = false;
+      if (intervalId) clearInterval(intervalId);
+    };
   }, []);
 
   // --- Login Handler ---

@@ -23,6 +23,14 @@ jobs:
     - name: Install dependencies
       run: npm install
 
+    # Step 3.5: Verify secret is available to the build
+    - name: Verify VITE_GOOGLE_CLIENT_ID
+      env:
+        VITE_GOOGLE_CLIENT_ID: ${{ secrets.VITE_GOOGLE_CLIENT_ID }}
+      run: |
+        if [ -z "$VITE_GOOGLE_CLIENT_ID" ]; then echo "::error::VITE_GOOGLE_CLIENT_ID is not set"; exit 1; fi
+        echo "VITE_GOOGLE_CLIENT_ID is set (length: ${#VITE_GOOGLE_CLIENT_ID})"
+
     # Step 4: Compile the app
     - name: Run Build
       env:
