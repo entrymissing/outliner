@@ -11,7 +11,7 @@ const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
 // Drive file name we use as the single Source of Truth
 const DRIVE_FILE_NAME = 'Outliner.md';
 
-// Helper to check auth availability (token kept in memory - not persisted)
+// Helper to check auth availability (token kept in memory - sign-in persistence via localStorage; token itself is not stored)
 
 // Note: We rely on the Google Identity Services script loaded in `index.html`:
 // <script src="https://accounts.google.com/gsi/client" async defer></script>
@@ -137,12 +137,16 @@ export default function App() {
               if (resp.error) {
                 console.error('Token client error', resp);
                 if (mounted) setAuthLoading(false);
+                // Clear persisted signed-in flag if silent or interactive sign-in failed
+                try { localStorage.removeItem('outliner:signedIn'); } catch (e) { /* ignore */ }
                 alert('Google sign-in failed: ' + (resp.error_description || resp.error));
                 return;
               }
 
               if (resp.access_token) {
                 if (mounted) setAccessToken(resp.access_token);
+                // Persist a lightweight signed-in flag so we can attempt silent sign-in on reloads
+                try { localStorage.setItem('outliner:signedIn', 'true'); } catch (e) { /* ignore */ }
                 if (mounted) setAuthLoading(false);
                 // Fetch basic userinfo so we can display an email
                 try {
@@ -171,6 +175,26 @@ export default function App() {
           if (intervalId) {
             clearInterval(intervalId);
             intervalId = null;
+          }
+
+          // If a previous sign-in was recorded, attempt a silent token request to restore session
+          try {
+            const wasSigned = localStorage.getItem('outliner:signedIn') === 'true';
+            if (wasSigned) {
+              // Attempt silent token retrieval (no consent prompt)
+              setAuthLoading(true);
+              tokenClient.requestAccessToken({ prompt: '' });
+              if (authTimeoutRef.current) clearTimeout(authTimeoutRef.current);
+              authTimeoutRef.current = setTimeout(() => {
+                // silent sign-in did not complete
+                setAuthLoading(false);
+                authTimeoutRef.current = null;
+              }, 7000);
+            }
+          } catch (e) {
+            console.warn('Silent sign-in attempt failed', e);
+            setAuthLoading(false);
+            localStorage.removeItem('outliner:signedIn');
           }
         }
       } catch (e) {
@@ -258,6 +282,7 @@ export default function App() {
     setAccessToken(null);
     driveFileId.current = null;
     lastRemoteMarkdown.current = '';
+    try { localStorage.removeItem('outliner:signedIn'); } catch (e) { /* ignore */ }
   };
   
   // --- Drive Sync (Load + Poll) ---
