@@ -17,7 +17,8 @@ const DRIVE_FILE_NAME = 'Outliner.md';
 // <script src="https://accounts.google.com/gsi/client" async defer></script>
 
 // Scopes: drive.file for read/write access to files created/opened by the app.
-const DRIVE_SCOPES = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly';
+// Also request OpenID/email/profile so we can call the userinfo endpoint to show the signed-in user.
+const DRIVE_SCOPES = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly openid email profile';
 
 // Globals: token client and current access token
 let tokenClient = null; // google.accounts.oauth2.TokenClient
@@ -101,6 +102,7 @@ export default function App() {
   const lastSyncedTimestamp = useRef(null);
   const lastServerTreeStr = useRef(''); // Helps us know if our local changes are actually new
   const localVersion = useRef(0);
+  const authTimeoutRef = useRef(null);
 
   const [draggedItem, setDraggedItem] = useState(null);
   const [dropTarget, setDropTarget] = useState(null);
@@ -125,11 +127,20 @@ export default function App() {
             client_id: GOOGLE_CLIENT_ID,
             scope: DRIVE_SCOPES,
             callback: async (resp) => {
+              console.log('Token client callback', resp);
+
+              if (authTimeoutRef.current) {
+                clearTimeout(authTimeoutRef.current);
+                authTimeoutRef.current = null;
+              }
+
               if (resp.error) {
                 console.error('Token client error', resp);
                 if (mounted) setAuthLoading(false);
+                alert('Google sign-in failed: ' + (resp.error_description || resp.error));
                 return;
               }
+
               if (resp.access_token) {
                 if (mounted) setAccessToken(resp.access_token);
                 if (mounted) setAuthLoading(false);
@@ -138,10 +149,21 @@ export default function App() {
                   const r = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { "Authorization": `Bearer ${resp.access_token}` } });
                   if (r.ok && mounted) {
                     setUser(await r.json());
+                  } else {
+                    const body = await r.text();
+                    console.error('Userinfo fetch failed', r.status, body);
+                    if (mounted) {
+                      // Show a helpful alert so the user can check console and OAuth settings
+                      alert('Failed to fetch user info (status: ' + r.status + '). Check OAuth scopes and browser console for details.');
+                    }
                   }
                 } catch (e) {
                   console.error('Error fetching userinfo', e);
                 }
+              } else {
+                // No token was returned (unexpected)
+                console.warn('Token client returned no access token:', resp);
+                if (mounted) setAuthLoading(false);
               }
             }
           });
@@ -199,12 +221,24 @@ export default function App() {
       alert('Google auth client not initialized. Ensure `VITE_GOOGLE_CLIENT_ID` is set and the Google Identity script is loaded.');
       return;
     }
+
+    setAuthLoading(true);
     try {
-      // This will trigger the token client callback which sets the access token and user
+      console.log('Requesting access token...');
       tokenClient.requestAccessToken({ prompt: 'consent' });
+
+      // Set a short timeout to detect when no token is returned (helps diagnose misconfig or origin issues)
+      if (authTimeoutRef.current) clearTimeout(authTimeoutRef.current);
+      authTimeoutRef.current = setTimeout(() => {
+        console.warn('No access token received after login attempt. Check OAuth client settings (Authorized JavaScript origins) and the browser console for errors.');
+        setAuthLoading(false);
+        alert('Sign in did not complete. Check the browser console for details.');
+        authTimeoutRef.current = null;
+      }, 7000);
     } catch (err) {
       console.error('Login failed', err);
       alert(err.message || 'Login failed');
+      setAuthLoading(false);
     }
   };
 
