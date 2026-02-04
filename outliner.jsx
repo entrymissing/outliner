@@ -137,8 +137,8 @@ export default function App() {
               if (resp.error) {
                 console.error('Token client error', resp);
                 if (mounted) setAuthLoading(false);
-                // Clear persisted signed-in flag if silent or interactive sign-in failed
-                try { localStorage.removeItem('outliner:signedIn'); } catch (e) { /* ignore */ }
+                // Clear persisted signed-in flag and stored email if silent or interactive sign-in failed
+                try { localStorage.removeItem('outliner:signedIn'); localStorage.removeItem('outliner:email'); } catch (e) { /* ignore */ }
                 alert('Google sign-in failed: ' + (resp.error_description || resp.error));
                 return;
               }
@@ -152,7 +152,9 @@ export default function App() {
                 try {
                   const r = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { "Authorization": `Bearer ${resp.access_token}` } });
                   if (r.ok && mounted) {
-                    setUser(await r.json());
+                    const userInfo = await r.json();
+                    setUser(userInfo);
+                    try { localStorage.setItem('outliner:email', userInfo.email || ''); } catch (e) { /* ignore */ }
                   } else {
                     const body = await r.text();
                     console.error('Userinfo fetch failed', r.status, body);
@@ -180,10 +182,12 @@ export default function App() {
           // If a previous sign-in was recorded, attempt a silent token request to restore session
           try {
             const wasSigned = localStorage.getItem('outliner:signedIn') === 'true';
+            const storedEmail = localStorage.getItem('outliner:email') || undefined;
             if (wasSigned) {
-              // Attempt silent token retrieval (no consent prompt)
+              // Attempt silent token retrieval (no consent prompt). Pass login_hint to avoid account chooser when possible.
               setAuthLoading(true);
-              tokenClient.requestAccessToken({ prompt: '' });
+              const reqOpts = storedEmail ? { prompt: '', login_hint: storedEmail } : { prompt: '' };
+              tokenClient.requestAccessToken(reqOpts);
               if (authTimeoutRef.current) clearTimeout(authTimeoutRef.current);
               authTimeoutRef.current = setTimeout(() => {
                 // silent sign-in did not complete
@@ -194,7 +198,7 @@ export default function App() {
           } catch (e) {
             console.warn('Silent sign-in attempt failed', e);
             setAuthLoading(false);
-            localStorage.removeItem('outliner:signedIn');
+            try { localStorage.removeItem('outliner:signedIn'); localStorage.removeItem('outliner:email'); } catch (e2) { /* ignore */ }
           }
         }
       } catch (e) {
@@ -282,7 +286,7 @@ export default function App() {
     setAccessToken(null);
     driveFileId.current = null;
     lastRemoteMarkdown.current = '';
-    try { localStorage.removeItem('outliner:signedIn'); } catch (e) { /* ignore */ }
+    try { localStorage.removeItem('outliner:signedIn'); localStorage.removeItem('outliner:email'); } catch (e) { /* ignore */ }
   };
   
   // --- Drive Sync (Load + Poll) ---
