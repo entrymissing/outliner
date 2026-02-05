@@ -1046,7 +1046,6 @@ export default function App() {
                       value={item.text}
                       onChange={(e) => updateText(item.id, e.target.value)}
                       onKeyDown={(e) => handleKeyDown(e, item.id, item.text, item.depth)}
-                      autoFocus
                       className={`
                         w-full bg-transparent outline-none transition-all
                         ${isSection 
