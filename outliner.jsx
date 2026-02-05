@@ -96,6 +96,7 @@ export default function App() {
   const isStaleLockRef = useRef(false); // prevents edits until we re-fetch if stale
   
   const inputRefs = useRef({});
+  const caretPosRef = useRef({});
   const pendingFocus = useRef(null);
   const saveTimeoutRef = useRef(null);
   const savingTreeRef = useRef(null);
@@ -422,6 +423,21 @@ export default function App() {
     }
   }, [visibleItems, focusedId]);
 
+  // Restore caret position when focused input re-renders (e.g. on save status changes)
+  useEffect(() => {
+    if (!focusedId) return;
+    const el = inputRefs.current[focusedId];
+    const pos = caretPosRef.current[focusedId];
+    if (el && pos) {
+      try {
+        el.setSelectionRange(pos.start, pos.end);
+      } catch (e) {
+        // ignore
+      }
+      caretPosRef.current[focusedId] = null;
+    }
+  }, [tree, focusedId, saveStatus]);
+
   // --- Theme Persistence: initialize from localStorage or system preference ---
   const getInitialDarkMode = () => {
     try {
@@ -617,6 +633,16 @@ export default function App() {
     lastInteractionRef.current = Date.now();
     const ok = await ensureFreshBeforeEdit();
     if (!ok) return;
+
+    // Preserve caret position for this input so re-renders (e.g. save status) won't move it to the end
+    try {
+      const el = inputRefs.current[id];
+      if (el && typeof el.selectionStart === 'number') {
+        caretPosRef.current[id] = { start: el.selectionStart, end: el.selectionEnd };
+      }
+    } catch (e) {
+      // ignore
+    }
 
     const newTree = cloneTree(tree);
     const path = findNodePath(newTree, id);
