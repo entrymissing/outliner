@@ -608,8 +608,7 @@ export default function App() {
   const ensureFreshBeforeEdit = async () => {
     // If user was inactive for > 60 minutes, re-fetch remote and apply before allowing edits
     if (!accessToken || !driveFileId.current) return true; // unable to check
-    const now = Date.now();
-    if (now - lastInteractionRef.current < (60 * 60 * 1000)) return true;
+
     if (isStaleLockRef.current) return false;
     isStaleLockRef.current = true;
     try {
@@ -629,10 +628,27 @@ export default function App() {
     }
   };
 
-  const updateText = async (id, newText) => {
+  /**
+   * Helper to wrap any state-modifying action with a freshness check.
+   * If the data is stale (no interaction for 60m), it syncs with Drive before proceeding.
+   */
+  const performAction = async (action, ...args) => {
+    const now = Date.now();
+    const wasStale = (now - lastInteractionRef.current >= (60 * 60 * 1000));
+    lastInteractionRef.current = now;
+
+    if (wasStale) {
+      const ok = await ensureFreshBeforeEdit();
+      if (!ok) return;
+    }
+
+    return action(...args);
+  };
+
+  const updateText = (id, newText) => {
+    // We don't use performAction here to keep text updates synchronous
+    // and prevent cursor jumping. We assume freshness was checked on focus.
     lastInteractionRef.current = Date.now();
-    const ok = await ensureFreshBeforeEdit();
-    if (!ok) return;
 
     // Preserve caret position for this input so re-renders (e.g. save status) won't move it to the end
     try {
@@ -653,11 +669,7 @@ export default function App() {
     }
   };
 
-  const toggleCollapse = async (id) => {
-    lastInteractionRef.current = Date.now();
-    const ok = await ensureFreshBeforeEdit();
-    if (!ok) return;
-
+  const toggleCollapse = (id) => performAction(() => {
     const newTree = cloneTree(tree);
     const path = findNodePath(newTree, id);
     if (path) {
@@ -666,13 +678,9 @@ export default function App() {
       setTree(newTree);
       localVersion.current++;
     }
-  };
+  });
 
-  const toggleComplete = async (id) => {
-    lastInteractionRef.current = Date.now();
-    const ok = await ensureFreshBeforeEdit();
-    if (!ok) return;
-
+  const toggleComplete = (id) => performAction(() => {
     const newTree = cloneTree(tree);
     const path = findNodePath(newTree, id);
     if (path) {
@@ -692,13 +700,9 @@ export default function App() {
       setTree(newTree);
       localVersion.current++;
     }
-  };
+  });
 
-  const addNode = async (afterId, isSection = false) => {
-    lastInteractionRef.current = Date.now();
-    const ok = await ensureFreshBeforeEdit();
-    if (!ok) return;
-
+  const addNode = (afterId, isSection = false) => performAction(() => {
     const newTree = cloneTree(tree);
     const newNode = { id: generateId(), text: '', completed: false, collapsed: false, children: [] };
     
@@ -712,14 +716,10 @@ export default function App() {
       setFocusedId(newNode.id);
       pendingFocus.current = newNode.id;
     }
-  };
+  });
 
   // Used only for empty state recovery
-  const addRootNode = async () => {
-      lastInteractionRef.current = Date.now();
-      const ok = await ensureFreshBeforeEdit();
-      if (!ok) return;
-
+  const addRootNode = () => performAction(() => {
       const newTree = cloneTree(tree);
       const newSectionId = generateId();
       
@@ -737,13 +737,9 @@ export default function App() {
         // Put the new root section into edit mode and request focus
         setFocusedId(newSectionId);
         pendingFocus.current = newSectionId;
-  };
+  });
 
-  const deleteNode = async (id) => {
-    lastInteractionRef.current = Date.now();
-    const ok = await ensureFreshBeforeEdit();
-    if (!ok) return;
-
+  const deleteNode = (id) => performAction(() => {
     const currentIndex = visibleItems.findIndex(item => item.id === id);
     let nextFocusId = null;
     if (currentIndex > 0) nextFocusId = visibleItems[currentIndex - 1].id;
@@ -765,13 +761,9 @@ export default function App() {
         setFocusedId(null);
       }
     }
-  };
+  });
 
-  const indentNode = async (id) => {
-    lastInteractionRef.current = Date.now();
-    const ok = await ensureFreshBeforeEdit();
-    if (!ok) return;
-
+  const indentNode = (id) => performAction(() => {
     const newTree = cloneTree(tree);
     const path = findNodePath(newTree, id);
     if (!path) return;
@@ -779,8 +771,6 @@ export default function App() {
     const { nodes, index } = path[path.length - 1];
     if (index === 0) return; // Can't indent first item
 
-    // Removed the check that blocked root-level indentations
-    
     const prevSibling = nodes[index - 1];
     const nodeToMove = nodes[index];
 
@@ -794,13 +784,9 @@ export default function App() {
     // Keep edit focus on the moved item
     setFocusedId(id);
     pendingFocus.current = id;
-  };
+  });
 
-  const outdentNode = async (id) => {
-    lastInteractionRef.current = Date.now();
-    const ok = await ensureFreshBeforeEdit();
-    if (!ok) return;
-
+  const outdentNode = (id) => performAction(() => {
     const newTree = cloneTree(tree);
     const path = findNodePath(newTree, id);
     if (!path || path.length < 2) return;
@@ -817,13 +803,9 @@ export default function App() {
     // Keep edit focus on the moved item
     setFocusedId(id);
     pendingFocus.current = id;
-  };
+  });
 
-  const moveNode = async (draggedId, targetId, position) => {
-    lastInteractionRef.current = Date.now();
-    const ok = await ensureFreshBeforeEdit();
-    if (!ok) return;
-
+  const moveNode = (draggedId, targetId, position) => performAction(() => {
     if (draggedId === targetId) return;
     const newTree = cloneTree(tree);
     
@@ -847,7 +829,7 @@ export default function App() {
 
     setTree(newTree);
     localVersion.current++;
-  };
+  });
 
   // --- Event Handlers ---
 
@@ -867,18 +849,20 @@ export default function App() {
       const index = visibleItems.findIndex(item => item.id === id);
       if (index > 0) {
         const prevId = visibleItems[index - 1].id;
-        // Put the previous item in edit mode and request focus
-        setFocusedId(prevId);
-        pendingFocus.current = prevId;
+        performAction(() => {
+          setFocusedId(prevId);
+          pendingFocus.current = prevId;
+        });
       }
     } else if (e.key === 'ArrowDown') {
       e.preventDefault();
       const index = visibleItems.findIndex(item => item.id === id);
       if (index < visibleItems.length - 1) {
         const nextId = visibleItems[index + 1].id;
-        // Put the next item in edit mode and request focus
-        setFocusedId(nextId);
-        pendingFocus.current = nextId;
+        performAction(() => {
+          setFocusedId(nextId);
+          pendingFocus.current = nextId;
+        });
       }
     }
   };
@@ -1085,10 +1069,10 @@ export default function App() {
                     />
                   ) : (
                     <div 
-                      onClick={() => {
+                      onClick={() => performAction(() => {
                         setFocusedId(item.id);
                         pendingFocus.current = item.id;
-                      }}
+                      })}
                       className={`
                         w-full min-h-[1.5em] cursor-text
                         ${isSection 
