@@ -29,7 +29,12 @@ const authFetch = async (url, opts = {}, accessToken) => {
     'Authorization': `Bearer ${accessToken}`,
   });
   const res = await fetch(url, Object.assign({}, opts, { headers }));
-  if (!res.ok) throw new Error(`HTTP ${res.status} - ${await res.text()}`);
+  if (!res.ok) {
+    const errorBody = await res.text();
+    const error = new Error(`HTTP ${res.status} - ${errorBody}`);
+    error.status = res.status;
+    throw error;
+  }
   return res;
 };
 
@@ -109,6 +114,17 @@ export default function App() {
   const [dropTarget, setDropTarget] = useState(null);
 
   const visibleItems = tree ? flattenTree(tree, 0, [], showCompleted) : [];
+
+  const refreshAuth = useCallback(() => {
+    if (tokenClient) {
+      console.log('Attempting silent token refresh...');
+      try {
+        tokenClient.requestAccessToken({ prompt: '' });
+      } catch (e) {
+        console.error('Failed to request token', e);
+      }
+    }
+  }, []);
 
 // --- Google Auth Initialization ---
   useEffect(() => {
@@ -315,19 +331,19 @@ export default function App() {
           lastSyncedTimestamp.current = new Date(listData.files[0].modifiedTime).getTime();
         } else {
           // Create an empty file with default content
-          const createRes = await fetch('https://www.googleapis.com/drive/v3/files', {
+          const createRes = await authFetch('https://www.googleapis.com/drive/v3/files', {
             method: 'POST',
-            headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name: DRIVE_FILE_NAME, mimeType: 'text/markdown' })
-          });
+          }, accessToken);
           const created = await createRes.json();
           fileId = created.id;
           const md = treeToMarkdown(DEFAULT_TREE);
-          await fetch(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`, {
+          await authFetch(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`, {
             method: 'PATCH',
-            headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'text/markdown' },
+            headers: { 'Content-Type': 'text/markdown' },
             body: md
-          });
+          }, accessToken);
           lastRemoteMarkdown.current = md;
           setTree(DEFAULT_TREE);
           setIsLoaded(true);
@@ -338,7 +354,12 @@ export default function App() {
         setSaveStatus('saved');
       } catch (e) {
         console.error('Error loading Drive file:', e);
-        setSaveStatus('error');
+        if (e.status === 401) {
+          refreshAuth();
+          setSaveStatus('unauthorized');
+        } else {
+          setSaveStatus('error');
+        }
       }
     };
 
@@ -365,6 +386,10 @@ export default function App() {
         }
       } catch (e) {
         console.error('Polling error', e);
+        if (e.status === 401) {
+          refreshAuth();
+          setSaveStatus('unauthorized');
+        }
       }
     }, 15 * 60 * 1000);
 
@@ -397,18 +422,23 @@ export default function App() {
       try {
         if (!driveFileId.current) throw new Error('No Drive file id');
 
-        await fetch(`https://www.googleapis.com/upload/drive/v3/files/${driveFileId.current}?uploadType=media`, {
+        await authFetch(`https://www.googleapis.com/upload/drive/v3/files/${driveFileId.current}?uploadType=media`, {
           method: 'PATCH',
-          headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'text/markdown' },
+          headers: { 'Content-Type': 'text/markdown' },
           body: localMd
-        });
+        }, accessToken);
 
         lastRemoteMarkdown.current = localMd;
         lastSyncedTimestamp.current = Date.now();
         setSaveStatus('saved');
       } catch (err) {
         console.error('Error saving to Drive:', err);
-        setSaveStatus('error');
+        if (err.status === 401) {
+          refreshAuth();
+          setSaveStatus('unauthorized');
+        } else {
+          setSaveStatus('error');
+        }
       }
     }, 1000);
 
@@ -622,6 +652,12 @@ export default function App() {
       return true;
     } catch (e) {
       console.error('Failed to refresh before edit', e);
+      if (e.status === 401) {
+        refreshAuth();
+        setSaveStatus('unauthorized');
+      } else {
+        setSaveStatus('error');
+      }
       return false;
     } finally {
       isStaleLockRef.current = false;
@@ -967,7 +1003,8 @@ export default function App() {
             <div className={`flex items-center gap-2 text-sm font-medium justify-end min-w-[80px] ${darkMode ? 'text-slate-500' : 'text-gray-400'}`}>
               {saveStatus === 'saving' && <><Loader2 size={14} className="animate-spin text-blue-500" /> Saving</>}
               {saveStatus === 'saved' && <><CheckCircle2 size={14} className="text-green-500" /> <span className="text-green-600">Saved</span></>}
-              {saveStatus === 'error' && <><CloudOff size={14} className="text-red-500" /> Offline</>}
+              {saveStatus === 'error' && <><CloudOff size={14} className="text-red-500" /> <span className="text-red-600">Sync Error</span></>}
+              {saveStatus === 'unauthorized' && <><AlertTriangle size={14} className="text-amber-500" /> <span className="text-amber-600">Session Expired</span></>}
               {saveStatus === 'conflict' && <><RefreshCw size={14} className="text-amber-500 animate-spin" /> <span className="text-amber-500">Syncing...</span></>}
             </div>
           </div>
