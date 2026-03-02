@@ -548,8 +548,8 @@ export default function App() {
     let currentProject = null;
 
     const headerRE = /^#\s+(.*)$/;
-    const bulletRE = /^\s*[-*]\s+(.*)$/;
-    const nestedBulletRE = /^\s{2,}[-*]\s+(.*)$/; // first nested level
+    const bulletRE = /^\s*[-*]\s+(?:\[([ xX])\]\s+)?(.*)$/;
+    const nestedBulletRE = /^\s{2,}[-*]\s+(?:\[([ xX])\]\s+)?(.*)$/; // first nested level
 
     for (const rawLine of lines) {
       const line = rawLine.replace(/\r$/, '');
@@ -564,7 +564,8 @@ export default function App() {
       const nb = line.match(nestedBulletRE);
       if (nb && currentProject) {
         // nested bullet: treat first nested bullet as metadata (links), subsequent as status notes
-        const child = { id: generateId(), text: nb[1].trim(), completed: false, collapsed: false, children: [] };
+        const isCompleted = nb[1] ? (nb[1].toLowerCase() === 'x') : false;
+        const child = { id: generateId(), text: nb[2].trim(), completed: isCompleted, collapsed: false, children: [] };
         currentProject.children = currentProject.children || [];
         currentProject.children.push(child);
         continue;
@@ -573,7 +574,8 @@ export default function App() {
       const b = line.match(bulletRE);
       if (b && currentSection) {
         // top-level project under current section
-        currentProject = { id: generateId(), text: b[1].trim(), completed: false, collapsed: false, children: [] };
+        const isCompleted = b[1] ? (b[1].toLowerCase() === 'x') : false;
+        currentProject = { id: generateId(), text: b[2].trim(), completed: isCompleted, collapsed: false, children: [] };
         currentSection.children.push(currentProject);
         continue;
       }
@@ -620,10 +622,12 @@ export default function App() {
       out += `# ${section.text || ''}\n\n`;
       if (section.children && section.children.length > 0) {
         for (const project of section.children) {
-          out += `- ${project.text || ''}\n`;
+          const check = project.completed ? '[x] ' : '[ ] ';
+          out += `- ${check}${project.text || ''}\n`;
           if (project.children && project.children.length > 0) {
             for (const child of project.children) {
-              out += `  - ${child.text || ''}\n`;
+              const childCheck = child.completed ? '[x] ' : '[ ] ';
+              out += `  - ${childCheck}${child.text || ''}\n`;
             }
           }
         }
